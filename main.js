@@ -599,6 +599,21 @@ window.addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') ma
 // ===========================================================================
 // Interpretation — ask the AI oracle to read the cast
 // ===========================================================================
+// Where the reading comes from. Defaults to a same-origin /interpret (the
+// bundled server.py). Override without redeploying by opening the app with
+// ?oracle=https://your-backend/interpret once — it's remembered thereafter.
+const ORACLE_PARAM = new URLSearchParams(location.search).get('oracle');
+if (ORACLE_PARAM !== null) {
+  if (ORACLE_PARAM) localStorage.setItem('oracleApi', ORACLE_PARAM);
+  else localStorage.removeItem('oracleApi');
+}
+// On a static host (e.g. GitHub Pages) there's no same-origin backend, so the
+// default points nowhere useful — detect that and show a friendly notice.
+const HAS_OWN_BACKEND = !/\.github\.io$/.test(location.hostname);
+const ORACLE_API = window.ORACLE_API
+  || localStorage.getItem('oracleApi')
+  || (HAS_OWN_BACKEND ? '/interpret' : '');
+
 let lastDraw = null;
 const interpretBtn = document.getElementById('interpretBtn');
 const readingEl = document.getElementById('reading');
@@ -620,19 +635,28 @@ function hideReading() {
 
 interpretBtn.addEventListener('click', async () => {
   if (!lastDraw) return;
+  if (!ORACLE_API) {
+    showReading(
+      'The cast is yours to keep — but spoken readings need the oracle ' +
+      'connected. This public preview runs without one. (The full version ' +
+      'reads your cast aloud through the stars.)', true);
+    return;
+  }
   interpretBtn.disabled = true;
   showReading('The oracle gazes into the cast…', true);
   try {
-    const res = await fetch('/interpret', {
+    const res = await fetch(ORACLE_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         planet: lastDraw.planet, sign: lastDraw.sign, house: lastDraw.house,
       }),
     });
-    const data = await res.json();
-    if (res.ok && data.reading) showReading(data.reading, false);
-    else showReading(data.error || 'The oracle is silent.', true);
+    let data = null;
+    try { data = await res.json(); } catch { /* non-JSON (e.g. 404 page) */ }
+    if (res.ok && data && data.reading) showReading(data.reading, false);
+    else if (data && data.error) showReading(data.error, true);
+    else showReading('The oracle is silent just now. Try again shortly.', true);
   } catch (err) {
     showReading('The oracle could not be reached: ' + err.message, true);
   } finally {

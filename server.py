@@ -161,13 +161,27 @@ def interpret(planet_i, sign_i, house_n):
 
 
 class Handler(SimpleHTTPRequestHandler):
+    def _cors(self):
+        # Allow a statically-hosted frontend (e.g. GitHub Pages) to call this
+        # backend cross-origin.
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
     def _send_json(self, code, obj):
         body = json.dumps(obj).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        # CORS preflight for the cross-origin /interpret POST.
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
 
     def do_POST(self):
         if self.path.rstrip("/") != "/interpret":
