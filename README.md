@@ -4,6 +4,24 @@ A divination app cast with three twelve-sided dice. Shake the phone (or press
 **Cast**) to stir the dice; hold still to let them fall. The three results are
 read as a single astrological placement, and an AI oracle interprets the cast.
 
+## Try it on your phone
+
+**▶ https://paralemon.github.io/oracle-of-the-twelve/**
+
+Open that link on any phone, anywhere — no install needed. On iOS, shake-to-cast
+works (it's served over HTTPS); you can also just tap **Cast the Dice**.
+
+**Install it like an app:** open the link, then
+- **iPhone (Safari):** Share → *Add to Home Screen*
+- **Android (Chrome):** ⋮ menu → *Install app* / *Add to Home screen*
+
+It then launches full-screen from your home screen and works offline.
+
+> The public link runs without the AI oracle (a reading needs a server holding a
+> secret key — see below). Casting, the reveal, and everything visual work fully.
+> To point the public app at a running backend, open it once with
+> `?oracle=https://your-backend/interpret` — the choice is remembered.
+
 ## The three dice
 
 | Die | Body | Symbols |
