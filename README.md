@@ -6,21 +6,23 @@ read as a single astrological placement, and an AI oracle interprets the cast.
 
 ## Try it on your phone
 
-**▶ https://paralemon.github.io/oracle-of-the-twelve/**
+**▶ https://oracle-of-the-twelve.vercel.app**
 
-Open that link on any phone, anywhere — no install needed. On iOS, shake-to-cast
-works (it's served over HTTPS); you can also just tap **Cast the Dice**.
+Open that link on any phone, anywhere — no install needed, and the **AI reading
+works** (the key lives server-side on Vercel). On iOS, tap **Enter** then shake
+to cast (HTTPS unlocks the motion sensor); you can also tap **Cast the Dice**.
 
 **Install it like an app:** open the link, then
 - **iPhone (Safari):** Share → *Add to Home Screen*
 - **Android (Chrome):** ⋮ menu → *Install app* / *Add to Home screen*
 
-It then launches full-screen from your home screen and works offline.
+It then launches full-screen from your home screen and works offline (the cast;
+readings need a connection).
 
-> The public link runs without the AI oracle (a reading needs a server holding a
-> secret key — see below). Casting, the reveal, and everything visual work fully.
-> To point the public app at a running backend, open it once with
-> `?oracle=https://your-backend/interpret` — the choice is remembered.
+> A GitHub Pages mirror also exists at
+> https://paralemon.github.io/oracle-of-the-twelve/ and now calls the Vercel
+> backend for readings via CORS. The Vercel URL above is canonical.
+> Override the backend for any build with `?oracle=https://your-backend/interpret`.
 
 ## The three dice
 

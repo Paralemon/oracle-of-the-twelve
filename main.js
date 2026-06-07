@@ -607,12 +607,14 @@ if (ORACLE_PARAM !== null) {
   if (ORACLE_PARAM) localStorage.setItem('oracleApi', ORACLE_PARAM);
   else localStorage.removeItem('oracleApi');
 }
-// On a static host (e.g. GitHub Pages) there's no same-origin backend, so the
-// default points nowhere useful — detect that and show a friendly notice.
+// The hosted backend (Vercel) that holds the API key. Same-origin when the app
+// itself is served from Vercel; used cross-origin (CORS) from other hosts like
+// GitHub Pages so every link gets readings.
+const PUBLIC_BACKEND = 'https://oracle-of-the-twelve.vercel.app/interpret';
 const HAS_OWN_BACKEND = !/\.github\.io$/.test(location.hostname);
 const ORACLE_API = window.ORACLE_API
   || localStorage.getItem('oracleApi')
-  || (HAS_OWN_BACKEND ? '/interpret' : '');
+  || (HAS_OWN_BACKEND ? '/interpret' : PUBLIC_BACKEND);
 
 let lastDraw = null;
 const interpretBtn = document.getElementById('interpretBtn');
