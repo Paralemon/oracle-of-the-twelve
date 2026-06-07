@@ -1,0 +1,5 @@
+# Local-dev / repo files that don't belong in the deployment
+server.py
+scripts/
+.claude/
+*.md

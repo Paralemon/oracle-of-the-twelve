@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    { "source": "/interpret", "destination": "/api/interpret" }
+  ],
+  "functions": {
+    "api/interpret.py": { "maxDuration": 60 }
+  }
+}
