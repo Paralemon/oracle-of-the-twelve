@@ -365,16 +365,31 @@ function startStir(source) {
   setState(stirSource === 'shake' ? 'the dice are tumbling…' : 'the dice are stirring…');
 }
 
-// Toss the dice; `power` scales the violence so a harder shake throws them more.
+// Toss the dice; `power` scales the energy so a harder shake tumbles them more.
+// Lead with spin + gentle horizontal nudges and only a tiny hop, so they roll
+// around the tray instead of launching off the top of the screen.
 function stir(power) {
   power = power == null ? 1 : power;
   dice.forEach(d => {
     d.body.wakeUp();
     d.body.applyImpulse(
-      new CANNON.Vec3(rand(6 * power), (3 + rng() * 6) * power, rand(6 * power)),
-      new CANNON.Vec3(rand(0.3), rand(0.3), rand(0.3))
+      new CANNON.Vec3(rand(2.6 * power), (0.4 + rng() * 1.1) * power, rand(2.6 * power)),
+      new CANNON.Vec3(rand(0.25), rand(0.25), rand(0.25))
     );
-    d.body.angularVelocity.set(rand(14 * power), rand(14 * power), rand(14 * power));
+    d.body.angularVelocity.set(rand(11 * power), rand(11 * power), rand(11 * power));
+  });
+}
+
+// Keep the dice on stage while tumbling: cap speed and never let them fly up
+// out of the camera's view.
+const MAX_TUMBLE_SPEED = 7;
+const TUMBLE_CEILING = 4.2;
+function containDice() {
+  dice.forEach(d => {
+    const v = d.body.velocity;
+    const s = Math.hypot(v.x, v.y, v.z);
+    if (s > MAX_TUMBLE_SPEED) { const k = MAX_TUMBLE_SPEED / s; v.x *= k; v.y *= k; v.z *= k; }
+    if (d.body.position.y > TUMBLE_CEILING && v.y > 0) v.y = 0;
   });
 }
 
@@ -547,7 +562,7 @@ function animate() {
     if (stirSource === 'shake') {
       // Tumble harder the harder you shake; decay the peak each frame so the
       // dice settle once you hold the phone still.
-      const power = Math.min(2.4, Math.max(0.35, shakeEnergy / 12));
+      const power = Math.min(1.4, Math.max(0.3, shakeEnergy / 16));
       stir(power);
       shakeEnergy *= Math.pow(0.86, dt * 60);
       if (shakeEnergy < STILL_SHAKE) {
@@ -564,6 +579,8 @@ function animate() {
   }
 
   world.step(1 / 60, dt, 3);
+
+  if (phase === 'stirring' || phase === 'settling') containDice();
 
   // While physics owns the dice, mirror the bodies onto the meshes.
   if (phase === 'idle' || phase === 'stirring' || phase === 'settling' || phase === 'pause') {
