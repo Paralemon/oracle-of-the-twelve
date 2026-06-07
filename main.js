@@ -349,27 +349,32 @@ const resultEl = document.getElementById('result');
 
 function setState(text) { stateEl.textContent = text; }
 
-function startStir() {
-  if (phase === 'stirring') return;
+let stirSource = 'button'; // 'shake' (live motion) or 'button' (tap/desktop)
+
+function startStir(source) {
+  if (phase === 'stirring') { if (source) stirSource = source; return; }
   phase = 'stirring';
+  stirSource = source || 'button';
   stirTimer = 0;
+  stillSeconds = 0;
   resultEl.classList.remove('show');
   interpretBtn.classList.add('hidden');
   hideReading();
   setArenaOpacity(1);
   dice.forEach((d, i) => randomizeDie(d, i));
-  setState('the dice are stirring…');
+  setState(stirSource === 'shake' ? 'the dice are tumbling…' : 'the dice are stirring…');
 }
 
-function stir() {
-  // Toss the dice around while shaking.
+// Toss the dice; `power` scales the violence so a harder shake throws them more.
+function stir(power) {
+  power = power == null ? 1 : power;
   dice.forEach(d => {
     d.body.wakeUp();
     d.body.applyImpulse(
-      new CANNON.Vec3(rand(6), 4 + rng() * 6, rand(6)),
+      new CANNON.Vec3(rand(6 * power), (3 + rng() * 6) * power, rand(6 * power)),
       new CANNON.Vec3(rand(0.3), rand(0.3), rand(0.3))
     );
-    d.body.angularVelocity.set(rand(14), rand(14), rand(14));
+    d.body.angularVelocity.set(rand(14 * power), rand(14 * power), rand(14 * power));
   });
 }
 
@@ -470,64 +475,64 @@ function setArenaOpacity(o) {
 }
 
 // ===========================================================================
-// Shake detection via DeviceMotion
+// Shake detection via DeviceMotion — the dice respond to how hard you shake.
 // ===========================================================================
-let stillTimer = 0;
 let motionEnabled = false;
+let shakeEnergy = 0;     // peak-held shake intensity (m/s² above gravity)
+let stillSeconds = 0;    // how long the phone has been ~still while tumbling
+const START_SHAKE = 6;   // begin tumbling at/above this intensity
+const STILL_SHAKE = 3;   // below this counts as "held still"
+const SETTLE_AFTER = 0.45; // seconds of stillness before the dice fall
 
 function handleMotion(e) {
-  const a = e.acceleration && e.acceleration.x !== null
-    ? e.acceleration
-    : e.accelerationIncludingGravity;
+  // Prefer gravity-free acceleration; fall back to the with-gravity reading.
+  const raw = !!(e.acceleration && e.acceleration.x !== null);
+  const a = raw ? e.acceleration : e.accelerationIncludingGravity;
   if (!a) return;
-  // Subtract ~gravity baseline when only includingGravity is available.
-  const useRaw = !!(e.acceleration && e.acceleration.x !== null);
-  const mag = Math.hypot(a.x || 0, a.y || 0, a.z || 0) - (useRaw ? 0 : 9.81);
-  const shake = Math.abs(mag);
-
-  if (shake > 12) {
-    stillTimer = 0;
-    startStir();
-  } else if (shake < 3) {
-    if (phase === 'stirring') {
-      stillTimer += 1;
-      if (stillTimer > 12) { settle(); } // ~0.2s of stillness at 60Hz
-    }
+  let mag = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
+  if (!raw) mag = Math.abs(mag - 9.81); // strip the ~9.81 gravity baseline
+  // Peak-hold: spikes register instantly; the loop decays this over time.
+  if (mag > shakeEnergy) shakeEnergy = mag;
+  if (mag > START_SHAKE) {
+    if (phase === 'stirring') stirSource = 'shake';
+    else if (phase === 'idle' || phase === 'settling' || phase === 'presented') startStir('shake');
   }
+}
+
+function setHint(text) {
+  const h = document.getElementById('hint');
+  if (h) h.textContent = text;
 }
 
 async function enableMotion() {
   const note = document.getElementById('motionNote');
-  if (typeof DeviceMotionEvent !== 'undefined' &&
-      typeof DeviceMotionEvent.requestPermission === 'function') {
-    try {
-      const res = await DeviceMotionEvent.requestPermission();
-      if (res === 'granted') {
-        window.addEventListener('devicemotion', handleMotion);
-        motionEnabled = true;
-      } else {
-        note.textContent = 'Motion denied — use the Cast button instead.';
-      }
-    } catch {
-      note.textContent = 'Motion unavailable — use the Cast button.';
-    }
-  } else if (typeof DeviceMotionEvent !== 'undefined') {
+  const enabled = () => {
     window.addEventListener('devicemotion', handleMotion);
     motionEnabled = true;
+    setHint('Shake your phone to tumble the dice — hold it still to let them fall.');
+  };
+  if (typeof DeviceMotionEvent !== 'undefined' &&
+      typeof DeviceMotionEvent.requestPermission === 'function') {
+    // iOS 13+: must ask, in response to this tap.
+    try {
+      const res = await DeviceMotionEvent.requestPermission();
+      if (res === 'granted') enabled();
+      else { note.textContent = 'Motion denied — use the Cast button instead.'; setHint('Tap “Cast the Dice”.'); }
+    } catch {
+      note.textContent = 'Motion unavailable — use the Cast button.';
+      setHint('Tap “Cast the Dice”.');
+    }
+  } else if (typeof DeviceMotionEvent !== 'undefined') {
+    // Android / others: no prompt needed over HTTPS.
+    enabled();
   } else {
     note.textContent = 'No motion sensor here — use the Cast button.';
+    setHint('Tap “Cast the Dice”.');
   }
 }
 
-// Manual cast (desktop / fallback): stir for a beat, then let them settle.
-function manualCast() {
-  startStir();
-  let t = 0;
-  const iv = setInterval(() => {
-    t++;
-    if (t > 5) { clearInterval(iv); settle(); }
-  }, 90);
-}
+// Manual cast (desktop / tap): tumble for a beat, then let them settle.
+function manualCast() { startStir('button'); }
 
 // ===========================================================================
 // Loop
@@ -539,9 +544,23 @@ function animate() {
 
   if (phase === 'stirring') {
     stirTimer += dt;
-    stir();
-    // Manual-mode safety: if no live motion, stop stirring after a while.
-    if (!motionEnabled && stirTimer > 2.5) settle();
+    if (stirSource === 'shake') {
+      // Tumble harder the harder you shake; decay the peak each frame so the
+      // dice settle once you hold the phone still.
+      const power = Math.min(2.4, Math.max(0.35, shakeEnergy / 12));
+      stir(power);
+      shakeEnergy *= Math.pow(0.86, dt * 60);
+      if (shakeEnergy < STILL_SHAKE) {
+        stillSeconds += dt;
+        if (stillSeconds > SETTLE_AFTER) settle();
+      } else {
+        stillSeconds = 0;
+      }
+    } else {
+      // Button / desktop: a fixed lively tumble, then settle.
+      stir(1);
+      if (stirTimer > 1.2) settle();
+    }
   }
 
   world.step(1 / 60, dt, 3);
