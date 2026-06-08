@@ -252,7 +252,7 @@ camera.add(headlight);
 // ===========================================================================
 // Physics world
 // ===========================================================================
-const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -48, 0) });
+const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -62, 0) });
 world.broadphase = new CANNON.SAPBroadphase(world);
 world.allowSleep = true;
 
@@ -366,30 +366,34 @@ function startStir(source) {
 }
 
 // Toss the dice; `power` scales the energy so a harder shake tumbles them more.
-// Lead with spin + gentle horizontal nudges and only a tiny hop, so they roll
-// around the tray instead of launching off the top of the screen.
+// Random in all three axes — no upward bias — so gravity is what drives them
+// downward. Spin is set fresh so they keep tumbling visibly while shaking.
 function stir(power) {
   power = power == null ? 1 : power;
   dice.forEach(d => {
     d.body.wakeUp();
     d.body.applyImpulse(
-      new CANNON.Vec3(rand(2.6 * power), (0.4 + rng() * 1.1) * power, rand(2.6 * power)),
+      new CANNON.Vec3(rand(2.4 * power), rand(1.4 * power), rand(2.4 * power)),
       new CANNON.Vec3(rand(0.25), rand(0.25), rand(0.25))
     );
-    d.body.angularVelocity.set(rand(11 * power), rand(11 * power), rand(11 * power));
+    d.body.angularVelocity.set(rand(10 * power), rand(10 * power), rand(10 * power));
   });
 }
 
-// Keep the dice on stage while tumbling: cap speed and never let them fly up
-// out of the camera's view.
-const MAX_TUMBLE_SPEED = 7;
-const TUMBLE_CEILING = 4.2;
+// Keep dice on stage WITHOUT robbing them of weight: cap sideways and upward
+// motion (so they don't rocket off frame), but leave downward fall fully free
+// so gravity reads on the eye. Heavy dice fall fast; this lets them.
+const MAX_HORIZONTAL = 5.5;
+const MAX_UPWARD = 3.5;
+const TUMBLE_CEILING = 2.6;
 function containDice() {
   dice.forEach(d => {
     const v = d.body.velocity;
-    const s = Math.hypot(v.x, v.y, v.z);
-    if (s > MAX_TUMBLE_SPEED) { const k = MAX_TUMBLE_SPEED / s; v.x *= k; v.y *= k; v.z *= k; }
+    const hs = Math.hypot(v.x, v.z);
+    if (hs > MAX_HORIZONTAL) { const k = MAX_HORIZONTAL / hs; v.x *= k; v.z *= k; }
+    if (v.y > MAX_UPWARD) v.y = MAX_UPWARD;
     if (d.body.position.y > TUMBLE_CEILING && v.y > 0) v.y = 0;
+    // Downward velocity is intentionally uncapped — heavy objects fall fast.
   });
 }
 
