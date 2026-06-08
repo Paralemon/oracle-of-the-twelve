@@ -44,8 +44,9 @@
       box-shadow: 0 6px 22px rgba(217,177,90,.35), inset 0 0 8px rgba(0,0,0,.2);
     }
 
-    #controls { bottom: 0; padding: 18px 16px 34px; display: flex;
-      flex-direction: column; align-items: center; gap: 12px; }
+    #controls { bottom: 0;
+      padding: 18px 16px calc(34px + env(safe-area-inset-bottom, 0px));
+      display: flex; flex-direction: column; align-items: center; gap: 12px; }
     .btn {
       pointer-events: auto; cursor: pointer; border: 1px solid var(--gold);
       background: rgba(217,177,90,.08); color: var(--gold);
@@ -53,7 +54,17 @@
       letter-spacing: 2px; text-transform: uppercase; font-family: inherit;
       backdrop-filter: blur(4px); transition: background .2s, transform .1s;
     }
-    .btn:active { transform: scale(.96); background: rgba(217,177,90,.2); }
+    .btn { transition: background .15s, transform .12s, box-shadow .2s, border-color .15s, color .15s; }
+    /* Press feedback: a clear hue/glow shift the moment a tap lands so the
+       user sees the app received it. Works for mouse and touch (and the
+       brief .pressed class makes it visible even on a quick tap). */
+    .btn:active, .btn.pressed {
+      transform: scale(.94);
+      background: rgba(217,177,90,.55);
+      color: #14121f;
+      border-color: #f3d488;
+      box-shadow: 0 0 22px rgba(217,177,90,.55);
+    }
     .btn.primary { background: rgba(217,177,90,.18); }
     .hint { font-size: 12px; opacity: .4; letter-spacing: 1px; max-width: 320px;
       text-align: center; pointer-events: none; }
@@ -93,7 +104,9 @@
     #reading .body { line-height: 1.8; font-size: 17px; opacity: .92;
       white-space: pre-wrap; text-align: left; }
     #reading .body.dim { opacity: .55; font-style: italic; text-align: center; }
-    #reading .close { margin: 34px auto 0; }
+    #reading .actions { display: flex; gap: 12px; justify-content: center;
+      flex-wrap: wrap; margin: 34px auto 0; }
+    #reading .actions .btn { margin: 0; }
 
     /* Hopping dots — used as a "the oracle is thinking" indicator.
        Three dots ripple up in sequence so the user knows the app isn't frozen. */
@@ -130,7 +143,10 @@
     <div class="inner">
       <div class="draw" id="readingDraw"></div>
       <div class="body" id="readingBody"></div>
-      <button id="readingClose" class="btn close">Close</button>
+      <div class="actions">
+        <button id="readingRecast" class="btn primary">Cast Again</button>
+        <button id="readingClose" class="btn">Close</button>
+      </div>
     </div>
   </div>
 

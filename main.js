@@ -718,3 +718,17 @@ interpretBtn.addEventListener('click', async () => {
 });
 
 document.getElementById('readingClose').addEventListener('click', hideReading);
+
+// Cast Again — recast directly from the reading panel. startStir() hides the
+// reading and sets phase to stirring, so a single tap dismisses + recasts.
+document.getElementById('readingRecast').addEventListener('click', manualCast);
+
+// Universal tap-confirmation flash: any .btn gets a brief `.pressed` class on
+// click so the user always sees their tap landed, even when the underlying
+// action does nothing (e.g. tapping while a network reading is loading).
+document.addEventListener('click', e => {
+  const b = e.target && e.target.closest && e.target.closest('.btn');
+  if (!b) return;
+  b.classList.add('pressed');
+  setTimeout(() => b.classList.remove('pressed'), 180);
+});
