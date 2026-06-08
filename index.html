@@ -94,6 +94,20 @@
       white-space: pre-wrap; text-align: left; }
     #reading .body.dim { opacity: .55; font-style: italic; text-align: center; }
     #reading .close { margin: 34px auto 0; }
+
+    /* Hopping dots — used as a "the oracle is thinking" indicator.
+       Three dots ripple up in sequence so the user knows the app isn't frozen. */
+    .dots { display: inline-block; margin-left: 2px; letter-spacing: 2px; }
+    .dots span {
+      display: inline-block; opacity: .25;
+      animation: dotHop 1.25s ease-in-out infinite;
+    }
+    .dots span:nth-child(2) { animation-delay: .18s; }
+    .dots span:nth-child(3) { animation-delay: .36s; }
+    @keyframes dotHop {
+      0%, 60%, 100% { transform: translateY(0); opacity: .25; }
+      30%           { transform: translateY(-5px); opacity: 1; }
+    }
   </style>
 </head>
 <body>

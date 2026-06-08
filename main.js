@@ -252,17 +252,17 @@ camera.add(headlight);
 // ===========================================================================
 // Physics world
 // ===========================================================================
-const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -30, 0) });
+const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -48, 0) });
 world.broadphase = new CANNON.SAPBroadphase(world);
 world.allowSleep = true;
 
 const diceMat = new CANNON.Material('dice');
 const groundMat = new CANNON.Material('ground');
 world.addContactMaterial(new CANNON.ContactMaterial(diceMat, groundMat, {
-  friction: 0.35, restitution: 0.35,
+  friction: 0.55, restitution: 0.12,
 }));
 world.addContactMaterial(new CANNON.ContactMaterial(diceMat, diceMat, {
-  friction: 0.2, restitution: 0.4,
+  friction: 0.35, restitution: 0.18,
 }));
 
 // Floor + invisible walls keep the dice contained.
@@ -302,8 +302,8 @@ for (let i = 0; i < 3; i++) {
   const body = new CANNON.Body({ mass: 1, material: diceMat });
   body.addShape(dieShape);
   body.position.set(...START[i]);
-  body.linearDamping = 0.1;
-  body.angularDamping = 0.1;
+  body.linearDamping = 0.22;
+  body.angularDamping = 0.28;
   body.sleepSpeedLimit = 0.15;
   body.sleepTimeLimit = 0.4;
   world.addBody(body);
@@ -658,9 +658,20 @@ const readingEl = document.getElementById('reading');
 const readingDraw = document.getElementById('readingDraw');
 const readingBody = document.getElementById('readingBody');
 
-function showReading(text, dim) {
+function showReading(text, dim, loading) {
   readingDraw.textContent = lastDraw ? lastDraw.glyphs : '';
-  readingBody.textContent = text;
+  if (loading) {
+    // Animated dots tell the user the app is working, not frozen.
+    // Reused by future API-backed paths (e.g. paid follow-up questions).
+    readingBody.textContent = '';
+    readingBody.appendChild(document.createTextNode(text + ' '));
+    const dots = document.createElement('span');
+    dots.className = 'dots';
+    dots.innerHTML = '<span>.</span><span>.</span><span>.</span>';
+    readingBody.appendChild(dots);
+  } else {
+    readingBody.textContent = text;
+  }
   readingBody.classList.toggle('dim', !!dim);
   readingEl.classList.add('show');
   document.body.classList.add('reading-open');
@@ -681,7 +692,7 @@ interpretBtn.addEventListener('click', async () => {
     return;
   }
   interpretBtn.disabled = true;
-  showReading('The oracle gazes into the cast…', true);
+  showReading('The oracle gazes into the cast', true, true);
   try {
     const res = await fetch(ORACLE_API, {
       method: 'POST',
