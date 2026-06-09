@@ -232,9 +232,19 @@
   <script type="module" src="./main.js"></script>
   <script>
     // Register the service worker (relative path -> correct scope on GitHub Pages).
+    // The explicit reg.update() on every page load forces the SW to re-check
+    // the network for a new sw.js — without it, Safari can serve a cached SW
+    // (and therefore a cached app shell) for up to 24h after a deploy. When a
+    // new SW activates, reload once so the page is controlled by it.
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js').catch(() => {});
+        navigator.serviceWorker.register('sw.js').then(reg => {
+          reg.update().catch(() => {});
+          let reloaded = false;
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (reloaded) return; reloaded = true; location.reload();
+          });
+        }).catch(() => {});
       });
     }
   </script>
