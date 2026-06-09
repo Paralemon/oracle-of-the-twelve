@@ -637,10 +637,16 @@ document.getElementById('rollBtn').addEventListener('click', manualCast);
 window.addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') manualCast(); });
 
 // ===========================================================================
-// Interpretation — ask the AI oracle to read the cast
+// Interpretation — look up the cast in the pre-generated reading bundle
 // ===========================================================================
-// Where the reading comes from. Defaults to a same-origin /interpret (the
-// bundled server.py). Override without redeploying by opening the app with
+// All 1,728 readings (12 planets × 12 signs × 12 houses) live in readings.json
+// next to this script. Fetched lazily on first use, then cached by the service
+// worker, so every later cast is instant and works offline.
+//
+// The live /interpret backend is still wired up as a fallback (in case the
+// bundle fails to load) and stays reserved for the future paid "ask the oracle
+// a follow-up question" feature — that's why we keep server.py and the Vercel
+// deployment around. Override without redeploying by opening the app with
 // ?oracle=https://your-backend/interpret once — it's remembered thereafter.
 const ORACLE_PARAM = new URLSearchParams(location.search).get('oracle');
 if (ORACLE_PARAM !== null) {
@@ -656,65 +662,222 @@ const ORACLE_API = window.ORACLE_API
   || localStorage.getItem('oracleApi')
   || (HAS_OWN_BACKEND ? '/interpret' : PUBLIC_BACKEND);
 
+// Lazy-loaded reading bundle. Keyed by `${planet}-${sign}-${house}` where
+// planet and sign are 0–11 face indices matching die order (Sun…Ketu,
+// Aries…Pisces) and house is 1–12.
+let readingsBundle = null;
+let readingsPromise = null;
+function loadReadings() {
+  if (readingsBundle) return Promise.resolve(readingsBundle);
+  if (readingsPromise) return readingsPromise;
+  readingsPromise = fetch('./readings.json')
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(j => { readingsBundle = j; return j; })
+    .catch(err => { readingsPromise = null; throw err; });
+  return readingsPromise;
+}
+
 let lastDraw = null;
 const interpretBtn = document.getElementById('interpretBtn');
 const readingEl = document.getElementById('reading');
 const readingDraw = document.getElementById('readingDraw');
 const readingBody = document.getElementById('readingBody');
 
-function showReading(text, dim, loading) {
+// Active reveal (if any) — held so we can cancel timers when the panel closes,
+// when the user starts a new cast, or when they tap to skip mid-reveal.
+let activeReveal = null;
+function cancelReveal() {
+  if (!activeReveal) return;
+  activeReveal.timers.forEach(clearTimeout);
+  activeReveal = null;
+}
+
+function openReadingPanel() {
   readingDraw.textContent = lastDraw ? lastDraw.glyphs : '';
-  if (loading) {
-    // Animated dots tell the user the app is working, not frozen.
-    // Reused by future API-backed paths (e.g. paid follow-up questions).
-    readingBody.textContent = '';
-    readingBody.appendChild(document.createTextNode(text + ' '));
-    const dots = document.createElement('span');
-    dots.className = 'dots';
-    dots.innerHTML = '<span>.</span><span>.</span><span>.</span>';
-    readingBody.appendChild(dots);
-  } else {
-    readingBody.textContent = text;
-  }
-  readingBody.classList.toggle('dim', !!dim);
   readingEl.classList.add('show');
   document.body.classList.add('reading-open');
 }
 
+// Dim italic centered text for "loading" and "error" states. Used while the
+// oracle is gathering, and for any short status message that isn't a reading.
+function showReadingStatus(text, withDots) {
+  cancelReveal();
+  readingBody.classList.remove('fading', 'revealing');
+  readingBody.classList.add('dim');
+  readingBody.textContent = '';
+  readingBody.appendChild(document.createTextNode(withDots ? text + ' ' : text));
+  if (withDots) {
+    // Hopping dots tell the user the app is working, not frozen. Reused by the
+    // future API-backed path (e.g. paid follow-up questions).
+    const dots = document.createElement('span');
+    dots.className = 'dots';
+    dots.innerHTML = '<span>.</span><span>.</span><span>.</span>';
+    readingBody.appendChild(dots);
+  }
+  openReadingPanel();
+}
+
+// Reveal the reading word-by-word with a soft fade trail. Whatever was in the
+// panel before (loading dots, a previous reading) fades out first so there's a
+// clear beat between "gathering" and "speaking".
+function revealReading(text) {
+  cancelReveal();
+  openReadingPanel();
+  // Fade out whatever's currently in the body (loading text + dots, or stale
+  // text from a previous reading) before swapping in the word-span structure.
+  readingBody.classList.add('fading');
+  const FADE_OUT_MS = 380;
+  const fadeTimer = setTimeout(() => buildAndStartReveal(text), FADE_OUT_MS);
+  // Track this preliminary timer so canceling mid-fade still works cleanly.
+  activeReveal = { timers: [fadeTimer], skip: () => {
+    clearTimeout(fadeTimer);
+    buildAndStartReveal(text, /* instant = */ true);
+  } };
+}
+
+// Pacing of the word reveal. Step is per-character (not per-word) so longer
+// words consume more time before the next starts — visually that means the
+// reveal cadence stays even instead of feeling jumpy across word lengths.
+// Combined with the long .9s word fade in CSS, many words are always in-flight
+// at once, giving a continuous wave of opacity rather than discrete pops.
+// Tuned so a ~210-word / ~1300-char reading takes roughly 12s overall.
+const REVEAL_STEP_PER_CHAR  = 7;   // ms added per character of the word
+const REVEAL_MIN_STEP       = 18;  // floor for very short words ("a", "is")
+const REVEAL_SENTENCE_PAUSE = 220; // extra pause after `.` / `!` / `?`
+const REVEAL_PARAGRAPH_PAUSE = 600; // extra pause between paragraphs
+
+function buildAndStartReveal(text, instant) {
+  readingBody.classList.remove('dim', 'fading');
+  readingBody.classList.add('revealing');
+  readingBody.textContent = '';
+
+  // Split on blank lines so paragraph breaks survive in the rendered output
+  // (the body has `white-space: pre-wrap`, so the `\n\n` we re-insert below
+  // renders as a real blank line).
+  const paragraphs = text.split(/\n\n+/);
+  const words = [];
+  paragraphs.forEach((para, pi) => {
+    if (pi > 0) readingBody.appendChild(document.createTextNode('\n\n'));
+    // Keep whitespace runs as their own tokens so spacing inside the paragraph
+    // is preserved exactly when we re-assemble the DOM.
+    const tokens = para.split(/(\s+)/);
+    let lastWordSpan = null;
+    tokens.forEach(tok => {
+      if (!tok) return;
+      if (/^\s+$/.test(tok)) {
+        readingBody.appendChild(document.createTextNode(tok));
+      } else {
+        const s = document.createElement('span');
+        s.className = 'word';
+        s.textContent = tok;
+        readingBody.appendChild(s);
+        words.push({ el: s, text: tok, endsParagraph: false });
+        lastWordSpan = words[words.length - 1];
+      }
+    });
+    if (lastWordSpan && pi < paragraphs.length - 1) lastWordSpan.endsParagraph = true;
+  });
+
+  if (instant) {
+    words.forEach(w => w.el.classList.add('shown'));
+    activeReveal = null;
+    readingBody.classList.remove('revealing');
+    return;
+  }
+
+  // Schedule each word's fade-in at an accumulating delay.
+  const timers = [];
+  let delay = 0;
+  words.forEach((w) => {
+    timers.push(setTimeout(() => w.el.classList.add('shown'), delay));
+    delay += Math.max(REVEAL_MIN_STEP, w.text.length * REVEAL_STEP_PER_CHAR);
+    if (/[.!?]$/.test(w.text)) delay += REVEAL_SENTENCE_PAUSE;
+    if (w.endsParagraph) delay += REVEAL_PARAGRAPH_PAUSE;
+  });
+  // One more timer to drop the `revealing` class (and pointer cursor) once
+  // the last word has had time to finish its fade-in transition.
+  timers.push(setTimeout(() => {
+    readingBody.classList.remove('revealing');
+    activeReveal = null;
+  }, delay + 600));
+
+  activeReveal = {
+    timers,
+    skip: () => {
+      timers.forEach(clearTimeout);
+      words.forEach(w => w.el.classList.add('shown'));
+      readingBody.classList.remove('revealing');
+      activeReveal = null;
+    },
+  };
+}
+
 function hideReading() {
+  cancelReveal();
   readingEl.classList.remove('show');
   document.body.classList.remove('reading-open');
 }
 
+// Tap anywhere on the reading body during reveal to skip to the full text.
+readingBody.addEventListener('click', () => {
+  if (activeReveal && activeReveal.skip) activeReveal.skip();
+});
+
+// Minimum time the "oracle gazes..." state is held even when the reading is
+// already in memory. Gives every cast the same ceremonial beat — a tiny breath
+// between the question and the answer.
+const CEREMONY_PAUSE_MS = 800;
+
 interpretBtn.addEventListener('click', async () => {
   if (!lastDraw) return;
-  if (!ORACLE_API) {
-    showReading(
-      'The cast is yours to keep — but spoken readings need the oracle ' +
-      'connected. This public preview runs without one. (The full version ' +
-      'reads your cast aloud through the stars.)', true);
-    return;
-  }
+  const key = `${lastDraw.planet}-${lastDraw.sign}-${lastDraw.house}`;
   interpretBtn.disabled = true;
-  showReading('The oracle gazes into the cast', true, true);
+  showReadingStatus('The oracle gazes into the cast', /* withDots = */ true);
+  const ceremonyStart = performance.now();
+
+  let reading = null;
+  let errorMsg = null;
   try {
-    const res = await fetch(ORACLE_API, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        planet: lastDraw.planet, sign: lastDraw.sign, house: lastDraw.house,
-      }),
-    });
-    let data = null;
-    try { data = await res.json(); } catch { /* non-JSON (e.g. 404 page) */ }
-    if (res.ok && data && data.reading) showReading(data.reading, false);
-    else if (data && data.error) showReading(data.error, true);
-    else showReading('The oracle is silent just now. Try again shortly.', true);
+    const bundle = await loadReadings();
+    reading = bundle[key];
+    if (!reading) errorMsg = 'The oracle has no words for this particular cast yet.';
   } catch (err) {
-    showReading('The oracle could not be reached: ' + err.message, true);
-  } finally {
-    interpretBtn.disabled = false;
+    // Bundle failed — fall back to the live API if available so the user
+    // still gets a reading instead of an error. (Same path the future paid
+    // "ask the oracle a follow-up question" feature will use.)
+    if (!ORACLE_API) {
+      errorMsg = 'The oracle could not be reached: ' + err.message;
+    } else {
+      try {
+        const res = await fetch(ORACLE_API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            planet: lastDraw.planet, sign: lastDraw.sign, house: lastDraw.house,
+          }),
+        });
+        let data = null;
+        try { data = await res.json(); } catch { /* non-JSON (e.g. 404 page) */ }
+        if (res.ok && data && data.reading) reading = data.reading;
+        else if (data && data.error) errorMsg = data.error;
+        else errorMsg = 'The oracle is silent just now. Try again shortly.';
+      } catch (err2) {
+        errorMsg = 'The oracle could not be reached: ' + err2.message;
+      }
+    }
   }
+
+  // Hold the loading state for at least CEREMONY_PAUSE_MS so the answer never
+  // feels like a snap, even when the bundle is already cached and lookup is
+  // effectively instant.
+  const elapsed = performance.now() - ceremonyStart;
+  if (elapsed < CEREMONY_PAUSE_MS) {
+    await new Promise(r => setTimeout(r, CEREMONY_PAUSE_MS - elapsed));
+  }
+
+  if (reading) revealReading(reading);
+  else showReadingStatus(errorMsg, /* withDots = */ false);
+  interpretBtn.disabled = false;
 });
 
 document.getElementById('readingClose').addEventListener('click', hideReading);

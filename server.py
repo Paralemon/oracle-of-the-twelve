@@ -17,6 +17,27 @@ import os
 import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
+
+def _load_dotenv(path=".env"):
+    """Load KEY=VALUE lines from a local .env (gitignored) into the
+    environment, so the API key can live in a file instead of the shell.
+    Existing environment variables win; we never overwrite them."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                key, val = key.strip(), val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except FileNotFoundError:
+        pass
+
+
+_load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
 MODEL = "claude-opus-4-7"
 PORT = int(os.environ.get("ORACLE_PORT", "8124"))
 

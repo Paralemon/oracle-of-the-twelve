@@ -5,9 +5,21 @@
 .env
 *.env
 
+# Google OAuth secrets (gdoc tooling)
+credentials.json
+token.json
+client_secret*.json
+
+# Python venv
+venv/
+.venv/
+
 # Python
 __pycache__/
 *.py[cod]
 
 # OS cruft
 .DS_Store
+
+# Intermediate per-combo reading files (the bundled readings.json is committed)
+readings/
