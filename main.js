@@ -661,6 +661,9 @@ const HAS_OWN_BACKEND = !/\.github\.io$/.test(location.hostname);
 const ORACLE_API = window.ORACLE_API
   || localStorage.getItem('oracleApi')
   || (HAS_OWN_BACKEND ? '/interpret' : PUBLIC_BACKEND);
+// The follow-up "ask the oracle" endpoint lives next to /interpret — derive
+// from ORACLE_API so an `?oracle=` override flips both endpoints together.
+const ASK_API = ORACLE_API ? ORACLE_API.replace(/\/interpret(\/?)$/, '/ask$1') : null;
 
 // Lazy-loaded reading bundle. Keyed by `${planet}-${sign}-${house}` where
 // planet and sign are 0–11 face indices matching die order (Sun…Ketu,
@@ -682,14 +685,20 @@ const interpretBtn = document.getElementById('interpretBtn');
 const readingEl = document.getElementById('reading');
 const readingDraw = document.getElementById('readingDraw');
 const readingBody = document.getElementById('readingBody');
+const readingDialog = document.getElementById('readingDialog');
+const askToggle = document.getElementById('askToggle');
+const askForm = document.getElementById('askForm');
+const askInput = document.getElementById('askInput');
+const askSubmit = document.getElementById('askSubmit');
+const askCancel = document.getElementById('askCancel');
 
-// Active reveal (if any) — held so we can cancel timers when the panel closes,
-// when the user starts a new cast, or when they tap to skip mid-reveal.
-let activeReveal = null;
-function cancelReveal() {
-  if (!activeReveal) return;
-  activeReveal.timers.forEach(clearTimeout);
-  activeReveal = null;
+// Active reveals — there can be more than one in flight at once (the main
+// reading + any in-progress oracle answer), so we track them as a Set and
+// cancel them en masse when the panel closes or the user starts a new cast.
+const activeReveals = new Set();
+function cancelAllReveals() {
+  activeReveals.forEach(r => r.cancel && r.cancel());
+  activeReveals.clear();
 }
 
 function openReadingPanel() {
@@ -701,38 +710,47 @@ function openReadingPanel() {
 // Dim italic centered text for "loading" and "error" states. Used while the
 // oracle is gathering, and for any short status message that isn't a reading.
 function showReadingStatus(text, withDots) {
-  cancelReveal();
+  cancelAllReveals();
   readingBody.classList.remove('fading', 'revealing');
   readingBody.classList.add('dim');
   readingBody.textContent = '';
   readingBody.appendChild(document.createTextNode(withDots ? text + ' ' : text));
   if (withDots) {
-    // Hopping dots tell the user the app is working, not frozen. Reused by the
-    // future API-backed path (e.g. paid follow-up questions).
+    // Hopping dots tell the user the app is working, not frozen.
     const dots = document.createElement('span');
     dots.className = 'dots';
     dots.innerHTML = '<span>.</span><span>.</span><span>.</span>';
     readingBody.appendChild(dots);
   }
+  // Hide the question UI during loading / error — only show it after a real
+  // reading has actually revealed.
+  hideAskUI();
   openReadingPanel();
 }
 
-// Reveal the reading word-by-word with a soft fade trail. Whatever was in the
-// panel before (loading dots, a previous reading) fades out first so there's a
-// clear beat between "gathering" and "speaking".
+// Reveal the reading word-by-word with a soft fade trail. Wraps revealInto()
+// with the loading-dots fade-out beat. Fires `onComplete` (which surfaces the
+// ask-the-oracle button) after the last word settles.
 function revealReading(text) {
-  cancelReveal();
+  cancelAllReveals();
   openReadingPanel();
-  // Fade out whatever's currently in the body (loading text + dots, or stale
-  // text from a previous reading) before swapping in the word-span structure.
+  hideAskUI();
+  // Fade out whatever's currently in the body before swapping in word spans.
   readingBody.classList.add('fading');
   const FADE_OUT_MS = 380;
-  const fadeTimer = setTimeout(() => buildAndStartReveal(text), FADE_OUT_MS);
-  // Track this preliminary timer so canceling mid-fade still works cleanly.
-  activeReveal = { timers: [fadeTimer], skip: () => {
-    clearTimeout(fadeTimer);
-    buildAndStartReveal(text, /* instant = */ true);
-  } };
+  const fadeTimer = setTimeout(
+    () => revealInto(readingBody, text, { onComplete: showAskToggle }),
+    FADE_OUT_MS,
+  );
+  // Track this preliminary timer so canceling mid-fade also works.
+  const handle = {
+    cancel: () => {
+      clearTimeout(fadeTimer);
+      // Skip to the full reveal immediately.
+      revealInto(readingBody, text, { instant: true, onComplete: showAskToggle });
+    },
+  };
+  activeReveals.add(handle);
 }
 
 // Pacing of the word reveal. Step is per-character (not per-word) so longer
@@ -746,18 +764,22 @@ const REVEAL_MIN_STEP       = 18;  // floor for very short words ("a", "is")
 const REVEAL_SENTENCE_PAUSE = 220; // extra pause after `.` / `!` / `?`
 const REVEAL_PARAGRAPH_PAUSE = 600; // extra pause between paragraphs
 
-function buildAndStartReveal(text, instant) {
-  readingBody.classList.remove('dim', 'fading');
-  readingBody.classList.add('revealing');
-  readingBody.textContent = '';
+// Generic word-reveal — targets any element, so it works for the main reading
+// body AND for individual oracle-answer turns appended in the dialog area.
+// Returns a handle with .cancel() that skips to the fully-revealed state.
+function revealInto(target, text, opts) {
+  opts = opts || {};
+  target.classList.remove('dim', 'fading');
+  target.classList.add('revealing');
+  target.textContent = '';
 
   // Split on blank lines so paragraph breaks survive in the rendered output
-  // (the body has `white-space: pre-wrap`, so the `\n\n` we re-insert below
+  // (the target uses `white-space: pre-wrap`, so the `\n\n` we re-insert below
   // renders as a real blank line).
   const paragraphs = text.split(/\n\n+/);
   const words = [];
   paragraphs.forEach((para, pi) => {
-    if (pi > 0) readingBody.appendChild(document.createTextNode('\n\n'));
+    if (pi > 0) target.appendChild(document.createTextNode('\n\n'));
     // Keep whitespace runs as their own tokens so spacing inside the paragraph
     // is preserved exactly when we re-assemble the DOM.
     const tokens = para.split(/(\s+)/);
@@ -765,12 +787,12 @@ function buildAndStartReveal(text, instant) {
     tokens.forEach(tok => {
       if (!tok) return;
       if (/^\s+$/.test(tok)) {
-        readingBody.appendChild(document.createTextNode(tok));
+        target.appendChild(document.createTextNode(tok));
       } else {
         const s = document.createElement('span');
         s.className = 'word';
         s.textContent = tok;
-        readingBody.appendChild(s);
+        target.appendChild(s);
         words.push({ el: s, text: tok, endsParagraph: false });
         lastWordSpan = words[words.length - 1];
       }
@@ -778,11 +800,11 @@ function buildAndStartReveal(text, instant) {
     if (lastWordSpan && pi < paragraphs.length - 1) lastWordSpan.endsParagraph = true;
   });
 
-  if (instant) {
+  if (opts.instant) {
     words.forEach(w => w.el.classList.add('shown'));
-    activeReveal = null;
-    readingBody.classList.remove('revealing');
-    return;
+    target.classList.remove('revealing');
+    if (opts.onComplete) opts.onComplete();
+    return { cancel: () => {} };
   }
 
   // Schedule each word's fade-in at an accumulating delay.
@@ -794,34 +816,39 @@ function buildAndStartReveal(text, instant) {
     if (/[.!?]$/.test(w.text)) delay += REVEAL_SENTENCE_PAUSE;
     if (w.endsParagraph) delay += REVEAL_PARAGRAPH_PAUSE;
   });
-  // One more timer to drop the `revealing` class (and pointer cursor) once
-  // the last word has had time to finish its fade-in transition.
-  timers.push(setTimeout(() => {
-    readingBody.classList.remove('revealing');
-    activeReveal = null;
-  }, delay + 600));
-
-  activeReveal = {
-    timers,
-    skip: () => {
+  // One more timer to drop the `revealing` class (and pointer cursor) and
+  // fire onComplete once the last word has had time to finish its fade-in.
+  const handle = {
+    cancel: () => {
       timers.forEach(clearTimeout);
       words.forEach(w => w.el.classList.add('shown'));
-      readingBody.classList.remove('revealing');
-      activeReveal = null;
+      target.classList.remove('revealing');
+      activeReveals.delete(handle);
+      if (opts.onComplete) opts.onComplete();
     },
   };
+  timers.push(setTimeout(() => {
+    target.classList.remove('revealing');
+    activeReveals.delete(handle);
+    if (opts.onComplete) opts.onComplete();
+  }, delay + 600));
+
+  // Tap on the target during reveal skips to the full text.
+  const tapToSkip = () => handle.cancel();
+  target.addEventListener('click', tapToSkip, { once: true });
+
+  activeReveals.add(handle);
+  return handle;
 }
 
 function hideReading() {
-  cancelReveal();
+  cancelAllReveals();
+  hideAskUI();
+  // Clear any prior dialog turns so the next cast starts clean.
+  if (readingDialog) readingDialog.textContent = '';
   readingEl.classList.remove('show');
   document.body.classList.remove('reading-open');
 }
-
-// Tap anywhere on the reading body during reveal to skip to the full text.
-readingBody.addEventListener('click', () => {
-  if (activeReveal && activeReveal.skip) activeReveal.skip();
-});
 
 // Minimum time the "oracle gazes..." state is held even when the reading is
 // already in memory. Gives every cast the same ceremonial beat — a tiny breath
@@ -875,12 +902,168 @@ interpretBtn.addEventListener('click', async () => {
     await new Promise(r => setTimeout(r, CEREMONY_PAUSE_MS - elapsed));
   }
 
-  if (reading) revealReading(reading);
-  else showReadingStatus(errorMsg, /* withDots = */ false);
+  if (reading) {
+    currentReading = reading;
+    revealReading(reading);
+  } else {
+    currentReading = '';
+    showReadingStatus(errorMsg, /* withDots = */ false);
+  }
   interpretBtn.disabled = false;
 });
 
 document.getElementById('readingClose').addEventListener('click', hideReading);
+
+// =============================================================================
+// About panel — explains the oracle (what it is, the lineage, how to use it).
+// Opens from either the topbar "About" link or the entry-overlay "What this
+// is" link; closes on Close button, Escape, or click on the scrim outside the
+// inner column.
+// =============================================================================
+const aboutEl = document.getElementById('about');
+function openAbout() {
+  aboutEl.classList.add('show');
+  document.body.classList.add('about-open');
+  aboutEl.scrollTop = 0;
+}
+function closeAbout() {
+  aboutEl.classList.remove('show');
+  document.body.classList.remove('about-open');
+}
+document.getElementById('aboutToggle').addEventListener('click', openAbout);
+document.getElementById('aboutFromOverlay').addEventListener('click', openAbout);
+document.getElementById('aboutClose').addEventListener('click', closeAbout);
+// Click on the dark scrim (the panel itself, outside .inner) closes too.
+aboutEl.addEventListener('click', e => {
+  if (e.target === aboutEl) closeAbout();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && aboutEl.classList.contains('show')) closeAbout();
+});
+
+// =============================================================================
+// Ask the Oracle — follow-up question against the same cast/reading
+// =============================================================================
+// The static bundle answers "what does this cast mean?" — the /ask endpoint
+// answers a specific follow-up the user types in, anchored in the placement
+// they were given. Different rate/cost shape than /interpret (live API call,
+// Claude Opus 4.7), so it sits behind an opt-in button that only surfaces
+// after the static reading has finished revealing.
+
+// Last static reading text, fed to /ask as context so the model can honor
+// (not repeat) what the user already saw.
+let currentReading = '';
+
+function showAskToggle() {
+  if (!ASK_API) return; // public preview without a backend — keep hidden
+  askToggle.classList.remove('hidden');
+  askForm.classList.add('hidden');
+}
+
+function hideAskUI() {
+  askToggle.classList.add('hidden');
+  askForm.classList.add('hidden');
+  askInput.value = '';
+}
+
+function openAskForm() {
+  askToggle.classList.add('hidden');
+  askForm.classList.remove('hidden');
+  // Focus on next tick — Safari sometimes ignores focus inside a click handler
+  // when the element transitions from display:none.
+  setTimeout(() => askInput.focus(), 50);
+}
+
+askToggle.addEventListener('click', openAskForm);
+askCancel.addEventListener('click', () => {
+  askForm.classList.add('hidden');
+  askToggle.classList.remove('hidden');
+});
+
+// Enter (without Shift) submits — Shift+Enter inserts a newline like a normal
+// textarea. Esc cancels.
+askInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    askSubmit.click();
+  } else if (e.key === 'Escape') {
+    askCancel.click();
+  }
+});
+
+askSubmit.addEventListener('click', async () => {
+  if (!lastDraw || !currentReading || !ASK_API) return;
+  const question = askInput.value.trim();
+  if (!question) return;
+  if (question.length > 2000) {
+    alert('That question is too long — please trim it to 2000 characters.');
+    return;
+  }
+  // Build the dialog turn immediately so the user sees their own question land,
+  // with the oracle's answer area below it showing the "considering" dots.
+  const turn = document.createElement('div');
+  turn.className = 'dialog-turn';
+  const q = document.createElement('div');
+  q.className = 'question';
+  q.textContent = question;
+  const answer = document.createElement('div');
+  answer.className = 'answer dim';
+  // Build the same loading-text + hopping-dots structure used by the main
+  // reading, so the visual language matches.
+  answer.appendChild(document.createTextNode('The oracle considers your question '));
+  const dots = document.createElement('span');
+  dots.className = 'dots';
+  dots.innerHTML = '<span>.</span><span>.</span><span>.</span>';
+  answer.appendChild(dots);
+  turn.appendChild(q);
+  turn.appendChild(answer);
+  readingDialog.appendChild(turn);
+  // Clear and disable input; collapse the form so the dots have center stage.
+  askInput.value = '';
+  askForm.classList.add('hidden');
+  askToggle.classList.add('hidden');
+  askSubmit.disabled = true;
+  askCancel.disabled = true;
+  // Scroll the new turn into view so the user follows the dialog naturally.
+  turn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  try {
+    const res = await fetch(ASK_API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        planet: lastDraw.planet,
+        sign: lastDraw.sign,
+        house: lastDraw.house,
+        reading: currentReading,
+        question,
+      }),
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* non-JSON response */ }
+    if (res.ok && data && data.answer) {
+      // Fade out the loading text, then reveal the answer word-by-word in the
+      // same gold inscription style as the static reading.
+      answer.classList.add('fading');
+      setTimeout(() => {
+        answer.classList.remove('dim');
+        revealInto(answer, data.answer, { onComplete: showAskToggle });
+      }, 380);
+    } else {
+      // Error state — replace the dots with the error message in dim italic.
+      answer.classList.remove('fading');
+      answer.textContent = (data && data.error)
+        || 'The oracle is silent just now. Try again shortly.';
+      showAskToggle();
+    }
+  } catch (err) {
+    answer.textContent = 'The oracle could not be reached: ' + err.message;
+    showAskToggle();
+  } finally {
+    askSubmit.disabled = false;
+    askCancel.disabled = false;
+  }
+});
 
 // Cast Again — recast directly from the reading panel. startStir() hides the
 // reading and sets phase to stirring, so a single tap dismisses + recasts.

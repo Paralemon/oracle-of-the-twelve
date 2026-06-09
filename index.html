@@ -172,6 +172,154 @@
       flex-wrap: wrap; margin: 34px auto 0; }
     #reading .actions .btn { margin: 0; }
 
+    /* Ask-the-Oracle area sits between the static reading and the Cast/Close
+       actions. The toggle button mirrors the reading's tone; tapping it opens
+       a textarea + Ask/Cancel buttons. */
+    #reading .ask { margin-top: 28px; display: flex; flex-direction: column;
+      align-items: center; gap: 14px; }
+    #reading .ask-toggle { font-size: 13px; letter-spacing: 1.5px; padding: 11px 22px; }
+    #reading .ask-form { width: 100%; max-width: 520px;
+      display: flex; flex-direction: column; gap: 12px; align-items: center; }
+    #reading .ask-form textarea {
+      width: 100%; resize: vertical; min-height: 84px;
+      background: rgba(247,217,137,.05);
+      border: 2px solid var(--gold);
+      border-radius: 16px;
+      color: #e9e3d2; padding: 14px 16px;
+      font: 16px/1.5 inherit; letter-spacing: .3px;
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+      box-shadow: 0 0 14px rgba(247,217,137,.15), inset 0 0 12px rgba(247,217,137,.04);
+    }
+    #reading .ask-form textarea:focus {
+      outline: none; border-color: #f3d488;
+      background: rgba(247,217,137,.10);
+      box-shadow: 0 0 22px rgba(247,217,137,.30), inset 0 0 14px rgba(247,217,137,.08);
+    }
+    #reading .ask-form textarea::placeholder { color: rgba(233,227,210,.45); font-style: italic; }
+    #reading .ask-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+    #reading .hidden { display: none !important; }
+
+    /* Dialog turns — one per asked question. The user's question is rendered
+       in italic gold, the oracle's answer in the same gold word-reveal as the
+       static reading. Each pair is separated by a thin gold rule that fades in
+       as the answer begins. */
+    #readingDialog { width: 100%; display: flex; flex-direction: column; }
+    .dialog-turn { margin-top: 28px; padding-top: 24px;
+      border-top: 1px solid rgba(217,177,90,.30); }
+    .dialog-turn .question {
+      color: var(--gold); font-style: italic; letter-spacing: .3px;
+      line-height: 1.6; font-size: 16px; margin-bottom: 18px;
+      text-shadow: 0 0 8px rgba(247,217,137,.22);
+    }
+    .dialog-turn .question::before {
+      content: "You asked — "; opacity: .55; font-style: normal; letter-spacing: 2px;
+      text-transform: uppercase; font-size: 11px;
+      display: block; margin-bottom: 6px;
+    }
+    /* The answer reuses the same `.body` rendering path (incl. .word .shown
+       gold-fade animation), but is a standalone block per turn so multiple
+       Q&A turns can stack visually. The .answer wrapper inherits .body styles. */
+    .dialog-turn .answer { line-height: 1.8; font-size: 17px; opacity: .92;
+      white-space: pre-wrap; text-align: left; }
+    .dialog-turn .answer.dim { opacity: .55; font-style: italic; text-align: center; }
+    .dialog-turn .answer .word {
+      opacity: 0;
+      color: #f7d989;
+      text-shadow:
+        0 0 6px  rgba(247,217,137,.95),
+        0 0 14px rgba(247,217,137,.55),
+        0 0 26px rgba(217,177,90,.35);
+      transition:
+        opacity .8s ease-out,
+        color 1.5s ease-out .5s,
+        text-shadow 1.5s ease-out .5s;
+    }
+    .dialog-turn .answer .word.shown {
+      opacity: 1;
+      color: #e9e3d2;
+      text-shadow: 0 0 0 rgba(247,217,137,0);
+    }
+    .dialog-turn .answer.fading > * { opacity: 0; transition: opacity .35s ease; }
+    .dialog-turn .answer.revealing { cursor: pointer; }
+
+    /* "About" trigger — a quiet text link, never competes with the dice. Used
+       in the top-right corner of the topbar and below the Enter button on the
+       entry overlay. Border-less so it doesn't add a UI element; gold tint on
+       hover so it's clearly tappable. */
+    .hud-link {
+      pointer-events: auto;
+      background: none; border: 0; padding: 4px 8px;
+      font-family: inherit; font-size: 12px; letter-spacing: 2px;
+      text-transform: uppercase; color: rgba(247,217,137,.55);
+      cursor: pointer; -webkit-tap-highlight-color: transparent;
+      transition: color .15s, text-shadow .15s;
+    }
+    .hud-link:hover, .hud-link:focus {
+      color: var(--gold);
+      text-shadow: 0 0 8px rgba(247,217,137,.35);
+      outline: none;
+    }
+    /* Topbar trigger is absolutely positioned so it floats in the corner
+       without disrupting the centered title/state layout. */
+    #topbar { position: fixed; left: 0; right: 0; }
+    #topbar #aboutToggle {
+      position: absolute; top: 14px; right: 14px;
+    }
+    /* Overlay trigger sits just below the Enter button with a little air. */
+    #overlay #aboutFromOverlay { margin-top: 8px; }
+
+    /* About panel — shares the reading panel's visual language: full-screen
+       dim scrim, scrollable inner column, parchment text, gold heading rules. */
+    #about {
+      position: fixed; inset: 0; z-index: 30; overflow-y: auto;
+      display: flex; -webkit-overflow-scrolling: touch;
+      background: rgba(8,8,14,.65);
+      /* visibility: hidden (not just pointer-events: none) is critical: the
+         inner Close button is a .btn which sets pointer-events: auto, and that
+         re-enables click capture on the invisible button — which would intercept
+         clicks aimed at the Enter button underneath. visibility: hidden makes
+         the entire subtree uninteractive, transitioned alongside opacity. */
+      opacity: 0; visibility: hidden; pointer-events: none;
+      transition: opacity .55s ease, visibility 0s linear .55s;
+    }
+    #about.show {
+      opacity: 1; visibility: visible; pointer-events: auto;
+      /* On open, flip visibility instantly so the fade-in is visible — the
+         transition-delay on visibility only matters for the close direction. */
+      transition: opacity .55s ease, visibility 0s linear 0s;
+    }
+    body.about-open #app canvas { filter: blur(10px) brightness(.55); transform: scale(1.06); }
+    body.about-open .hud { opacity: 0; transition: opacity .4s ease; }
+    #about .inner {
+      margin: auto; padding: 64px 28px 48px; max-width: 580px;
+      display: flex; flex-direction: column;
+    }
+    #about .about-title {
+      text-align: center; color: var(--gold);
+      letter-spacing: 4px; font-weight: normal; font-size: 26px;
+      margin: 0 0 36px;
+      text-shadow: 0 0 18px rgba(217,177,90,.35);
+    }
+    #about section { margin: 0 0 28px; }
+    #about h3 {
+      color: var(--gold); font-weight: normal;
+      font-size: 13px; letter-spacing: 3px; text-transform: uppercase;
+      margin: 0 0 14px; padding-bottom: 8px;
+      border-bottom: 1px solid rgba(217,177,90,.30);
+      text-shadow: 0 0 10px rgba(247,217,137,.25);
+    }
+    #about p {
+      line-height: 1.75; font-size: 16px; opacity: .92;
+      margin: 0 0 14px; color: #e9e3d2;
+    }
+    #about p:last-child { margin-bottom: 0; }
+    #about em { font-style: italic; color: rgba(247,217,137,.85); }
+    #about strong { font-weight: normal; color: var(--gold); }
+    #about .actions {
+      display: flex; justify-content: center;
+      margin: 18px auto 0;
+    }
+
     /* Hopping dots — used as a "the oracle is thinking" indicator.
        Three dots ripple up in sequence so the user knows the app isn't frozen. */
     .dots { display: inline-block; margin-left: 2px; letter-spacing: 2px; }
@@ -193,6 +341,9 @@
   <div id="topbar" class="hud">
     <div id="title">Oracle of the Twelve</div>
     <div id="state">awaiting the cast</div>
+    <!-- Small "About" link in the top-right corner — always available, never
+         intrusive. Opens the #about modal. -->
+    <button id="aboutToggle" class="hud-link" aria-label="About the Oracle">About</button>
   </div>
 
   <div id="result"></div>
@@ -207,9 +358,61 @@
     <div class="inner">
       <div class="draw" id="readingDraw"></div>
       <div class="body" id="readingBody"></div>
+      <!-- Per-question turn appended here once the user starts asking. Each
+           turn is a stylized "you asked..." + "the oracle answers..." pair
+           rendered with the same gold word-reveal as the static reading. -->
+      <div id="readingDialog"></div>
+      <div class="ask">
+        <!-- Hidden until the static reading has finished revealing. Tapping it
+             reveals the input row; the input row reuses .btn styling for the
+             submit so it matches the rest of the panel. -->
+        <button id="askToggle" class="btn ask-toggle hidden">Ask the Oracle a Question</button>
+        <div id="askForm" class="ask-form hidden">
+          <textarea id="askInput" rows="3" maxlength="2000"
+            placeholder="Ask the oracle anything — about this cast, about what's troubling you, about what comes next…"></textarea>
+          <div class="ask-actions">
+            <button id="askSubmit" class="btn primary">Ask</button>
+            <button id="askCancel" class="btn">Cancel</button>
+          </div>
+        </div>
+      </div>
       <div class="actions">
         <button id="readingRecast" class="btn primary">Cast Again</button>
         <button id="readingClose" class="btn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- About panel — opens from #aboutToggle (topbar) or #aboutFromOverlay
+       (entry overlay). Shares the visual language of the reading panel:
+       full-screen scrim, blurred dice, parchment text on a dark backdrop,
+       3px-gold-ring close button. -->
+  <div id="about">
+    <div class="inner">
+      <h2 class="about-title">Oracle of the Twelve</h2>
+      <section>
+        <h3>What it is</h3>
+        <p>The Oracle of the Twelve is a divination by three twelve-sided dice. The first carries the luminaries, planets, and lunar nodes — Sun, Moon, Mercury, Venus, Mars, Jupiter, Saturn, Uranus, Neptune, Pluto, and Rahu and Ketu, the north and south nodes. The second carries the twelve signs of the zodiac. The third carries the twelve houses of the natal chart. Cast together, they speak as a single placement.</p>
+      </section>
+      <section>
+        <h3>The reading</h3>
+        <p>Every placement is three layers braided into one.</p>
+        <p>The <em>planet</em> is the <strong>what</strong> — the force at work. The <em>sign</em> is the <strong>how</strong> — the temperament it wears. The <em>house</em> is the <strong>where</strong> — the field of life in which it moves.</p>
+        <p>A cast of Saturn in Scorpio in the 8th, for instance, reads as enduring discipline (Saturn) expressed through unflinching depth (Scorpio) in the chamber of intimacy, shared resources, and transformation (the 8th house).</p>
+      </section>
+      <section>
+        <h3>The lineage</h3>
+        <p>The system stands on three older feet. From <em>horary and electional astrology</em>, the principle that the heavens at the moment of a question contain something of the question's answer. From <em>cleromancy</em> — the lot-casting of the ancient Mediterranean, of the Yoruba diviners, of the I&nbsp;Ching — the principle that chance, approached attentively, is one of the languages the world uses to speak. From <em>the natal chart</em>, the twelvefold map of a life: the planets that move, the signs that color, the houses that locate.</p>
+        <p>A thrown placement is a small horary chart in miniature. The dice freeze the heavens at the moment of your asking.</p>
+      </section>
+      <section>
+        <h3>How to use it well</h3>
+        <p>Approach with a real question, even an unspoken one. Hold the question in mind as you shake the dice. Cast once and accept the cast — let the placement work on you across the day rather than across the instant.</p>
+        <p>The first reading speaks to the placement in general — its archetypal note. If a particular thread calls — <em>what does this mean for me right now?</em>, <em>how should I act on this?</em> — ask the oracle directly. The live response will answer in your specific frame, anchored in the placement you were given.</p>
+        <p>Twelve planets. Twelve signs. Twelve houses. One thousand seven hundred twenty-eight castings — each a mirror with a different facet turned toward you.</p>
+      </section>
+      <div class="actions">
+        <button id="aboutClose" class="btn primary">Close</button>
       </div>
     </div>
   </div>
@@ -218,6 +421,7 @@
     <h1>Oracle of the Twelve</h1>
     <p>Three twelve-sided dice answer what you ask. Shake to stir them, then hold the phone still to cast.</p>
     <button id="enterBtn" class="btn primary">Enter</button>
+    <button id="aboutFromOverlay" class="hud-link" type="button">What this is</button>
     <p id="motionNote" style="font-size:12px;opacity:.4"></p>
   </div>
 

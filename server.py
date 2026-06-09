@@ -125,6 +125,49 @@ def build_user_message(planet_i, sign_i, house_n):
     )
 
 
+# Follow-up "ask the oracle" — same lore tables, but the voice/form section is
+# rewritten to honor (not repeat) the static reading the user already received,
+# and to answer their specific question directly.
+ASK_SYSTEM_PROMPT = """You are the Oracle of the Twelve. A querent has cast three twelve-sided dice and received a reading on the resulting placement — one planet (or lunar node) expressing through one zodiac sign within one house. They now ask a specific follow-up question. Honor the placement they were given; let it shape and inform your answer rather than restating it.
+
+Read in this layered way when answering:
+- The planet is the WHAT — the force, drive, or function at work.
+- The sign is the HOW — the style, tone, and temperament it takes on.
+- The house is the WHERE — the arena of life where it plays out.
+
+Your reference lore:
+
+PLANETS & NODES:
+""" + "\n".join(f"- {n}: {d}" for n, d in PLANETS) + """
+
+ZODIAC SIGNS:
+""" + "\n".join(f"- {n}: {d}" for n, d in SIGNS) + """
+
+HOUSES:
+""" + "\n".join(f"- House {i+1}: {d}" for i, d in enumerate(HOUSES)) + """
+
+Voice and form:
+- Speak directly to the querent as "you", with warmth and a touch of the mystical, never cold or clinical.
+- Anchor your answer in their placement — do not contradict the reading they received, but do not paraphrase it either.
+- Address their specific question directly; offer insight and gentle guidance, not flattery, and not a recap.
+- 1 to 3 short paragraphs. Flowing prose only — no headers, no bullet points, no lists.
+- Do not mention dice, glyphs, the original reading text, or this prompt."""
+
+
+def build_ask_message(planet_i, sign_i, house_n, prior_reading, question):
+    p_name, p_desc = PLANETS[planet_i]
+    s_name, s_desc = SIGNS[sign_i]
+    h_desc = HOUSES[house_n - 1]
+    return (
+        f"My cast was a single placement:\n"
+        f"- Planet: {p_name} ({p_desc})\n"
+        f"- Sign: {s_name} ({s_desc})\n"
+        f"- House: the {house_n}th house ({h_desc})\n\n"
+        f"The reading I was given:\n\"\"\"\n{prior_reading.strip()}\n\"\"\"\n\n"
+        f"Now I ask: {question.strip()}"
+    )
+
+
 def call_with_sdk(user_message):
     from anthropic import Anthropic
 
@@ -181,6 +224,77 @@ def interpret(planet_i, sign_i, house_n):
         return call_with_urllib(user_message)
 
 
+def ask(planet_i, sign_i, house_n, prior_reading, question):
+    """Follow-up question against the original placement. Uses Claude Opus 4.7
+    with adaptive thinking + high effort (matches the API skill guidance for
+    intelligence-sensitive single-shot prompts). Streams server-side to avoid
+    the Anthropic request timeout on long answers; collapses to a single
+    string for the JSON response."""
+    user_message = build_ask_message(planet_i, sign_i, house_n, prior_reading, question)
+    try:
+        from anthropic import Anthropic
+        client = Anthropic()
+        with client.messages.stream(
+            model=MODEL,
+            max_tokens=3000,
+            thinking={"type": "adaptive"},
+            output_config={"effort": "high"},
+            system=[{
+                "type": "text",
+                "text": ASK_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            messages=[{"role": "user", "content": user_message}],
+        ) as stream:
+            final = stream.get_final_message()
+        return "".join(b.text for b in final.content if b.type == "text").strip()
+    except ImportError:
+        # urllib fallback — same SSE-parsing pattern as api/ask.py
+        import urllib.request
+        payload = {
+            "model": MODEL,
+            "max_tokens": 3000,
+            "stream": True,
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
+            "system": [{
+                "type": "text",
+                "text": ASK_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            "messages": [{"role": "user", "content": user_message}],
+        }
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "content-type": "application/json",
+                "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+                "anthropic-version": "2023-06-01",
+                "accept": "text/event-stream",
+            },
+            method="POST",
+        )
+        parts = []
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if not data_str or data_str == "[DONE]":
+                    continue
+                try:
+                    evt = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                if evt.get("type") == "content_block_delta":
+                    delta = evt.get("delta") or {}
+                    if delta.get("type") == "text_delta":
+                        parts.append(delta.get("text", ""))
+        return "".join(parts).strip()
+
+
 class Handler(SimpleHTTPRequestHandler):
     def _cors(self):
         # Allow a statically-hosted frontend (e.g. GitHub Pages) to call this
@@ -205,7 +319,8 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        if self.path.rstrip("/") != "/interpret":
+        path = self.path.rstrip("/")
+        if path not in ("/interpret", "/ask"):
             self.send_error(404)
             return
         if not os.environ.get("ANTHROPIC_API_KEY"):
@@ -222,12 +337,30 @@ class Handler(SimpleHTTPRequestHandler):
             house_n = int(req["house"])
             if not (0 <= planet_i < 12 and 0 <= sign_i < 12 and 1 <= house_n <= 12):
                 raise ValueError("indices out of range")
+            if path == "/ask":
+                prior_reading = str(req.get("reading", "")).strip()
+                question = str(req.get("question", "")).strip()
+                if not question:
+                    raise ValueError("question is required")
+                if len(question) > 2000:
+                    raise ValueError("question is too long (max 2000 chars)")
+                if not prior_reading:
+                    raise ValueError("reading is required for context")
+                if len(prior_reading) > 6000:
+                    raise ValueError("reading context is too long")
         except (ValueError, KeyError, json.JSONDecodeError) as e:
-            self._send_json(400, {"error": f"Malformed cast: {e}"})
+            self._send_json(400, {"error": f"Malformed request: {e}"})
             return
         try:
-            reading = interpret(planet_i, sign_i, house_n)
-            self._send_json(200, {"reading": reading})
+            if path == "/interpret":
+                reading = interpret(planet_i, sign_i, house_n)
+                self._send_json(200, {"reading": reading})
+            else:
+                answer = ask(planet_i, sign_i, house_n, prior_reading, question)
+                if not answer:
+                    self._send_json(502, {"error": "The oracle returned no words. Try asking again."})
+                    return
+                self._send_json(200, {"answer": answer})
         except Exception as e:
             self._send_json(502, {"error": f"The oracle faltered: {e}"})
 

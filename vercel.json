@@ -1,8 +1,10 @@
 {
   "rewrites": [
-    { "source": "/interpret", "destination": "/api/interpret" }
+    { "source": "/interpret", "destination": "/api/interpret" },
+    { "source": "/ask", "destination": "/api/ask" }
   ],
   "functions": {
-    "api/interpret.py": { "maxDuration": 60 }
+    "api/interpret.py": { "maxDuration": 60 },
+    "api/ask.py": { "maxDuration": 60 }
   }
 }

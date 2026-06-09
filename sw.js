@@ -1,6 +1,6 @@
 // Service worker — makes the Oracle installable and loadable offline.
 // Bump CACHE when shipping changes so clients pick up new assets.
-const CACHE = 'oracle-v7';
+const CACHE = 'oracle-v10';
 
 // Same-origin app shell. CDN modules (three, cannon-es) are cached lazily
 // at runtime below so the first online visit makes later visits work offline.
