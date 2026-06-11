@@ -27,7 +27,30 @@
     #topbar { top: 0; padding: 18px 16px 8px; text-align: center; }
     #title { font-size: 30px; letter-spacing: 4px; color: var(--gold);
       text-transform: uppercase; opacity: .9; }
-    #state { margin-top: 7px; font-size: 18px; letter-spacing: 3px; opacity: .55; }
+    /* On phones the dice are the focus, so the title becomes a small refined
+       header — small enough that its centered text clears the top-right "About"
+       link with margin to spare (no wrap, no overlap). */
+    @media (max-width: 480px) {
+      #title { font-size: 15px; letter-spacing: 1.5px; }
+      #state { font-size: 14px; letter-spacing: 2px; }
+    }
+    #state { margin-top: 7px; font-size: 18px; letter-spacing: 3px; opacity: .7;
+      /* Layered halo so the line reads cleanly over anything: a tight dark
+         contour lifts it off a light die when a presented die rises near the
+         top, and a soft white outer glow separates it from the dark backdrop.
+         Stops the text from looking cheap when it overlaps a 3D object. */
+      text-shadow:
+        0 1px 3px rgba(0,0,0,.85),
+        0 0 14px rgba(255,255,255,.40),
+        0 0 30px rgba(255,255,255,.18);
+      transition: text-shadow .5s ease; }
+    /* When the cast has resolved, intensify the white halo a touch so "the
+       oracle has spoken" feels like a soft pronouncement. */
+    body.spoken #state {
+      text-shadow:
+        0 1px 3px rgba(0,0,0,.9),
+        0 0 16px rgba(255,255,255,.65),
+        0 0 40px rgba(255,255,255,.30); }
 
     #result {
       position: fixed; left: 50%; top: 16%; transform: translateX(-50%);
@@ -289,44 +312,71 @@
          clicks aimed at the Enter button underneath. visibility: hidden makes
          the entire subtree uninteractive, transitioned alongside opacity. */
       opacity: 0; visibility: hidden; pointer-events: none;
-      transition: opacity .55s ease, visibility 0s linear .55s;
+      transition: opacity .45s ease, visibility 0s linear .45s;
+      /* A near-opaque sheet (not a thin scrim) so the prose reads as its own
+         clean surface on a phone rather than competing with the blurred dice. */
+      background:
+        radial-gradient(120% 80% at 50% 0%, rgba(26,21,16,.55), transparent 60%),
+        rgba(9,8,13,.95);
     }
     #about.show {
       opacity: 1; visibility: visible; pointer-events: auto;
       /* On open, flip visibility instantly so the fade-in is visible — the
          transition-delay on visibility only matters for the close direction. */
-      transition: opacity .55s ease, visibility 0s linear 0s;
+      transition: opacity .45s ease, visibility 0s linear 0s;
     }
-    body.about-open #app canvas { filter: blur(10px) brightness(.55); transform: scale(1.06); }
+    body.about-open #app canvas { filter: blur(14px) brightness(.4); transform: scale(1.06); }
     body.about-open .hud { opacity: 0; transition: opacity .4s ease; }
     #about .inner {
-      margin: auto; padding: 64px 28px 48px; max-width: 580px;
+      margin: 0 auto; width: 100%; max-width: 560px;
+      padding: calc(64px + env(safe-area-inset-top, 0px)) 24px
+               calc(48px + env(safe-area-inset-bottom, 0px));
       display: flex; flex-direction: column;
     }
+    /* Fixed close × — always reachable, doesn't scroll away. */
+    .about-x {
+      position: fixed; z-index: 1;
+      top: calc(10px + env(safe-area-inset-top, 0px)); right: 12px;
+      width: 44px; height: 44px; line-height: 40px; text-align: center;
+      font-size: 30px; font-family: inherit;
+      background: none; border: 0; cursor: pointer;
+      color: rgba(247,217,137,.6); -webkit-tap-highlight-color: transparent;
+      transition: color .15s, text-shadow .15s;
+    }
+    .about-x:hover, .about-x:focus { color: var(--gold);
+      text-shadow: 0 0 10px rgba(247,217,137,.4); outline: none; }
     #about .about-title {
       text-align: center; color: var(--gold);
-      letter-spacing: 4px; font-weight: normal; font-size: 26px;
-      margin: 0 0 36px;
+      letter-spacing: 3px; font-weight: normal; font-size: 23px;
+      line-height: 1.3; margin: 0 0 34px;
       text-shadow: 0 0 18px rgba(217,177,90,.35);
     }
-    #about section { margin: 0 0 28px; }
+    #about section { margin: 0 0 30px; }
     #about h3 {
       color: var(--gold); font-weight: normal;
-      font-size: 13px; letter-spacing: 3px; text-transform: uppercase;
-      margin: 0 0 14px; padding-bottom: 8px;
-      border-bottom: 1px solid rgba(217,177,90,.30);
+      font-size: 12px; letter-spacing: 3px; text-transform: uppercase;
+      margin: 0 0 13px; padding-bottom: 9px;
+      border-bottom: 1px solid rgba(217,177,90,.28);
       text-shadow: 0 0 10px rgba(247,217,137,.25);
     }
     #about p {
-      line-height: 1.75; font-size: 16px; opacity: .92;
-      margin: 0 0 14px; color: #e9e3d2;
+      line-height: 1.7; font-size: 16px; opacity: .9;
+      margin: 0 0 13px; color: #e9e3d2;
     }
     #about p:last-child { margin-bottom: 0; }
     #about em { font-style: italic; color: rgba(247,217,137,.85); }
     #about strong { font-weight: normal; color: var(--gold); }
     #about .actions {
       display: flex; justify-content: center;
-      margin: 18px auto 0;
+      margin: 16px auto 0;
+    }
+    /* On small screens, tighten the top padding and type so the panel opens to
+       the title (not a wall of empty space) and the content breathes. */
+    @media (max-width: 480px) {
+      #about .inner { padding-top: calc(56px + env(safe-area-inset-top, 0px)); }
+      #about .about-title { font-size: 21px; letter-spacing: 2px; margin-bottom: 28px; }
+      #about p { font-size: 15.5px; }
+      #about section { margin-bottom: 26px; }
     }
 
     /* Hopping dots — used as a "the oracle is thinking" indicator.
@@ -397,6 +447,9 @@
        full-screen scrim, blurred dice, parchment text on a dark backdrop,
        3px-gold-ring close button. -->
   <div id="about">
+    <!-- Always-visible close affordance so the panel can be dismissed from the
+         top on mobile without scrolling to the bottom button. -->
+    <button id="aboutCloseX" class="about-x" aria-label="Close">&times;</button>
     <div class="inner">
       <h2 class="about-title">Oracle of the Twelve</h2>
       <section>

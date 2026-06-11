@@ -451,6 +451,7 @@ function startStir(source) {
   stillSeconds = 0;
   resultEl.classList.remove('show');
   interpretBtn.classList.add('hidden');
+  document.body.classList.remove('spoken'); // reset the state-line halo
   hideReading();
   setArenaOpacity(1);
   dice.forEach((d, i) => randomizeDie(d, i));
@@ -471,16 +472,17 @@ function stir(power, shakeVec) {
   dice.forEach(d => {
     d.body.wakeUp();
     if (hasDir) {
-      // Scatter dominates so the dice bounce all around the ring; the shake
-      // direction is a *lean*, not a shove. (A strong directional impulse
-      // applied every frame accumulates into a one-way slam that piles every
-      // die against a single wall — what was happening before.) The circular
-      // bouncing wall does the rest, keeping motion lively without clustering.
+      // Direction now dominates so the dice genuinely fly the way you shake —
+      // possible because gravity no longer biases the direction (see the
+      // high-pass filter in handleMotion) and the direction decays fast, so a
+      // back-and-forth shake reverses the push each half-stroke instead of
+      // piling everything against one wall. The bouncing circular wall and the
+      // remaining scatter keep it lively.
       d.body.applyImpulse(
         new CANNON.Vec3(
-          dirX * 1.3 * power + rand(2.4 * power),
-          rand(1.0 * power),
-          dirZ * 1.3 * power + rand(2.4 * power),
+          dirX * 2.8 * power + rand(1.5 * power),
+          rand(1.1 * power),
+          dirZ * 2.8 * power + rand(1.5 * power),
         ),
         new CANNON.Vec3(rand(0.25), rand(0.25), rand(0.25)),
       );
@@ -611,6 +613,7 @@ function beginPresent() {
   presentTime = 0;
   phase = 'presenting';
   setState('the oracle has spoken');
+  document.body.classList.add('spoken'); // brightens the state-line halo
 }
 
 function onPresented() {
@@ -745,7 +748,9 @@ function animate() {
       // Tumble harder the harder you shake; decay the peak each frame so the
       // dice settle once you hold the phone still. Pass the live shake direction
       // so the dice fly the way the phone is moving.
-      const power = Math.min(1.6, Math.max(0.35, shakeEnergy / 14));
+      // A harder shake throws harder: lower divisor + higher ceiling than
+      // before so vigorous shaking really flings the dice across the ring.
+      const power = Math.min(2.2, Math.max(0.4, shakeEnergy / 11));
       stir(power, shakeDir);
       shakeEnergy *= Math.pow(0.86, dt * 60);
       // Decay direction quickly so a single left-shake gives a brief left lean
@@ -1116,6 +1121,7 @@ function closeAbout() {
 document.getElementById('aboutToggle').addEventListener('click', openAbout);
 document.getElementById('aboutFromOverlay').addEventListener('click', openAbout);
 document.getElementById('aboutClose').addEventListener('click', closeAbout);
+document.getElementById('aboutCloseX').addEventListener('click', closeAbout);
 // Click on the dark scrim (the panel itself, outside .inner) closes too.
 aboutEl.addEventListener('click', e => {
   if (e.target === aboutEl) closeAbout();
