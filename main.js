@@ -283,7 +283,8 @@ world.addContactMaterial(new CANNON.ContactMaterial(diceMat, groundMat, {
   contactEquationStiffness: 1e7, contactEquationRelaxation: 3,
 }));
 world.addContactMaterial(new CANNON.ContactMaterial(diceMat, diceMat, {
-  friction: 0.55, restitution: 0.08,
+  // A touch more bounce between dice so they push apart instead of stacking.
+  friction: 0.5, restitution: 0.22,
   contactEquationStiffness: 1e7, contactEquationRelaxation: 3,
 }));
 
@@ -294,15 +295,11 @@ floorBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
 world.addBody(floorBody);
 
 const WALL_H = 6;
-const wallShape = new CANNON.Box(new CANNON.Vec3(TRAY, WALL_H, 0.1));
-[[0, -TRAY, 0], [0, TRAY, Math.PI], [-TRAY, 0, Math.PI / 2], [TRAY, 0, -Math.PI / 2]]
-  .forEach(([x, z, ry]) => {
-    const w = new CANNON.Body({ mass: 0, material: groundMat });
-    w.addShape(wallShape);
-    w.position.set(x, WALL_H, z);
-    w.quaternion.setFromEuler(0, ry, 0);
-    world.addBody(w);
-  });
+// NOTE: the arena wall is a *circle* handled manually in containDice() (see
+// the radial bounce there), not a set of box walls. Box walls form a square,
+// whose corners reach radius ~TRAY*√2 — well outside the round ring — which is
+// why dice used to escape past the ring and pile in a corner. A circular
+// boundary that matches the visible ring fixes that and gives a real bounce.
 
 // Ceiling so violent shakes don't fling dice out the top.
 const ceil = new CANNON.Body({ mass: 0, material: groundMat });
@@ -465,12 +462,16 @@ function stir(power, shakeVec) {
   dice.forEach(d => {
     d.body.wakeUp();
     if (hasDir) {
-      // 75% directional, 25% scatter — flies the shake way but not robotically.
+      // Scatter dominates so the dice bounce all around the ring; the shake
+      // direction is a *lean*, not a shove. (A strong directional impulse
+      // applied every frame accumulates into a one-way slam that piles every
+      // die against a single wall — what was happening before.) The circular
+      // bouncing wall does the rest, keeping motion lively without clustering.
       d.body.applyImpulse(
         new CANNON.Vec3(
-          dirX * 3.4 * power + rand(1.4 * power),
+          dirX * 1.3 * power + rand(2.4 * power),
           rand(1.0 * power),
-          dirZ * 3.4 * power + rand(1.4 * power),
+          dirZ * 1.3 * power + rand(2.4 * power),
         ),
         new CANNON.Vec3(rand(0.25), rand(0.25), rand(0.25)),
       );
@@ -484,19 +485,45 @@ function stir(power, shakeVec) {
   });
 }
 
-// Keep dice on stage WITHOUT robbing them of weight: cap sideways and upward
-// motion (so they don't rocket off frame), but leave downward fall fully free
-// so gravity reads on the eye. Heavy dice fall fast; this lets them.
-const MAX_HORIZONTAL = 5.5;
+// Keep dice on stage WITHOUT robbing them of weight: a circular wall that
+// matches the visible ring and *bounces* them inward, plus gentle upward and
+// ceiling caps. Downward fall is left free so gravity reads on the eye.
+const DIE_CIRCUMRADIUS = DIE_SCALE * Math.sqrt(3); // farthest vertex from center
+const RING_RADIUS = TRAY + 0.05;                   // matches the torus ring mesh
+// Clamp die *centers* so the die body stays inside the ring. Using circumradius
+// keeps even the corners from poking over the ring line.
+const ARENA_R = RING_RADIUS - DIE_CIRCUMRADIUS;
+const WALL_BOUNCE = 0.55;   // how much radial speed is kept on a wall hit
+const MAX_HORIZONTAL = 7.0; // safety cap so a violent shake can't tunnel
 const MAX_UPWARD = 3.5;
 const TUMBLE_CEILING = 2.6;
 function containDice() {
   dice.forEach(d => {
+    const p = d.body.position;
     const v = d.body.velocity;
+
+    // Safety speed cap (prevents tunneling through the radial wall in one step).
     const hs = Math.hypot(v.x, v.z);
     if (hs > MAX_HORIZONTAL) { const k = MAX_HORIZONTAL / hs; v.x *= k; v.z *= k; }
+
+    // --- Circular wall with bounce -----------------------------------------
+    // If the die center passes the arena radius, snap it back to the wall and
+    // reflect the *outward* component of its velocity so it rebounds inward
+    // instead of sticking. Tangential motion is preserved (it slides along).
+    const r = Math.hypot(p.x, p.z);
+    if (r > ARENA_R && r > 1e-4) {
+      const nx = p.x / r, nz = p.z / r;       // outward unit normal
+      p.x = nx * ARENA_R; p.z = nz * ARENA_R; // clamp to the wall
+      const vn = v.x * nx + v.z * nz;         // outward velocity component
+      if (vn > 0) {                            // moving outward → bounce inward
+        const j = (1 + WALL_BOUNCE) * vn;
+        v.x -= j * nx; v.z -= j * nz;
+      }
+      d.body.wakeUp(); // a wall hit should never leave it asleep mid-tumble
+    }
+
     if (v.y > MAX_UPWARD) v.y = MAX_UPWARD;
-    if (d.body.position.y > TUMBLE_CEILING && v.y > 0) v.y = 0;
+    if (p.y > TUMBLE_CEILING && v.y > 0) v.y = 0;
     // Downward velocity is intentionally uncapped — heavy objects fall fast.
   });
 }
@@ -693,9 +720,10 @@ function animate() {
       const power = Math.min(1.6, Math.max(0.35, shakeEnergy / 14));
       stir(power, shakeDir);
       shakeEnergy *= Math.pow(0.86, dt * 60);
-      // Decay the direction too so a held-still phone stops pushing the dice.
-      shakeDir.x *= Math.pow(0.80, dt * 60);
-      shakeDir.z *= Math.pow(0.80, dt * 60);
+      // Decay direction quickly so a single left-shake gives a brief left lean
+      // (not a sustained one-way push); a continued shake keeps refreshing it.
+      shakeDir.x *= Math.pow(0.62, dt * 60);
+      shakeDir.z *= Math.pow(0.62, dt * 60);
       if (shakeEnergy < STILL_SHAKE) {
         stillSeconds += dt;
         if (stillSeconds > SETTLE_AFTER) settle();
