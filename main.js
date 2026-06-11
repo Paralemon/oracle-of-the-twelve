@@ -342,9 +342,10 @@ for (let i = 0; i < 3; i++) {
   dice.push({ mesh, body, symbols: config.symbols, restPose: null });
 }
 
-// Shared down vector for resting orientation (declared before the init call
-// below so it isn't in the temporal dead zone when layDieFlat first runs).
+// Constants used by layDieFlat — declared before the init call below so they
+// aren't in the temporal dead zone when layDieFlat first runs.
 const _downVec = new THREE.Vector3(0, -1, 0);
+const REST_RADIUS = 1.35; // distance of each resting die from tray center
 
 // Start with the dice lying at rest on the tray (not dropping from midair).
 dice.forEach((d, i) => layDieFlat(d, i));
@@ -398,9 +399,17 @@ function layDieFlat(d, i) {
   const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rng() * Math.PI * 2);
   q.premultiply(yaw);
   d.body.quaternion.set(q.x, q.y, q.z, q.w);
-  // Small spread across the tray so the three dice don't overlap. INRADIUS +
-  // a hair keeps the resting face just touching the floor without interpen.
-  d.body.position.set(START[i][0] * 0.7, INRADIUS + 0.02, START[i][2] * 0.7);
+  // Lay the three dice on the points of a triangle so they DON'T overlap. At
+  // REST_RADIUS = 1.35 the pairwise gap is ~2.3, comfortably more than two die
+  // silhouettes (~0.87 radius each). A small per-load angle jitter keeps the
+  // arrangement from looking identical every time. INRADIUS + a hair keeps the
+  // resting face just touching the floor without interpenetrating it.
+  const angle = (i / 3) * Math.PI * 2 + Math.PI / 2 + (rng() - 0.5) * 0.5;
+  d.body.position.set(
+    Math.cos(angle) * REST_RADIUS,
+    INRADIUS + 0.02,
+    Math.sin(angle) * REST_RADIUS,
+  );
   d.body.velocity.setZero();
   d.body.angularVelocity.setZero();
   d.body.sleep();
@@ -633,31 +642,50 @@ let stillSeconds = 0;    // how long the phone has been ~still while tumbling
 // World-space direction of the latest shake, normalized. The loop reads this so
 // the dice fly the way the phone is being shaken. Decays toward zero each frame.
 const shakeDir = { x: 0, z: 0 };
-const START_SHAKE = 6;   // begin tumbling at/above this intensity
+// Low-pass estimate of the gravity vector in the device frame. Subtracting it
+// from accelerationIncludingGravity yields the *dynamic* (shake) component with
+// gravity removed — without this, gravity dominated the direction vector and
+// the dice always leaned the same way (the "upper-left" drift).
+const gravEst = { x: 0, y: 0, z: 0 };
+let gravInit = false;
+const START_SHAKE = 6;   // begin tumbling at/above this dynamic intensity
 const STILL_SHAKE = 3;   // below this counts as "held still"
 const SETTLE_AFTER = 0.45; // seconds of stillness before the dice fall
 
 function handleMotion(e) {
-  // Prefer gravity-free acceleration; fall back to the with-gravity reading.
-  const raw = !!(e.acceleration && e.acceleration.x !== null);
-  const a = raw ? e.acceleration : e.accelerationIncludingGravity;
-  if (!a) return;
-  const ax = a.x || 0, ay = a.y || 0, az = a.z || 0;
-  let mag = Math.hypot(ax, ay, az);
-  if (!raw) mag = Math.abs(mag - 9.81); // strip the ~9.81 gravity baseline
+  const af = e.acceleration;               // gravity-free (may be null/zero)
+  const ag = e.accelerationIncludingGravity;
+  let dx, dy, dz;
+  if (af && af.x != null && (Math.abs(af.x) + Math.abs(af.y) + Math.abs(af.z)) > 0.05) {
+    // Device supplies a real gravity-free reading — already the dynamic signal.
+    dx = af.x; dy = af.y; dz = af.z;
+  } else if (ag) {
+    // Only with-gravity available (common on Android). High-pass it: track the
+    // slow gravity vector with a low-pass filter, then subtract to get the fast
+    // shake component. This is what removes the constant directional bias.
+    const ax = ag.x || 0, ay = ag.y || 0, az = ag.z || 0;
+    if (!gravInit) { gravEst.x = ax; gravEst.y = ay; gravEst.z = az; gravInit = true; }
+    const A = 0.9; // closer to 1 = slower gravity tracking, more shake passes
+    gravEst.x = A * gravEst.x + (1 - A) * ax;
+    gravEst.y = A * gravEst.y + (1 - A) * ay;
+    gravEst.z = A * gravEst.z + (1 - A) * az;
+    dx = ax - gravEst.x; dy = ay - gravEst.y; dz = az - gravEst.z;
+  } else {
+    return;
+  }
+
+  const mag = Math.hypot(dx, dy, dz);
   // Peak-hold: spikes register instantly; the loop decays this over time.
   if (mag > shakeEnergy) shakeEnergy = mag;
-  // Map the phone's acceleration frame onto the tray's world frame. The phone
-  // is held roughly upright facing the user; device-x (left/right across the
-  // screen) drives world-x (left/right across the tray), and device-y (up/down
-  // along the screen) drives world-z (toward/away on the tray). Negate device-y
-  // so pushing the phone "up" sends the dice "away" from the camera, which is
-  // what the eye expects. Only update direction on real shakes so a resting
-  // phone's sensor noise doesn't nudge the dice.
+  // Map the phone's (gravity-free) acceleration frame onto the tray's world
+  // frame. Device-x (left/right across the screen) drives world-x (left/right
+  // across the tray); device-y (up/down the screen) drives world-z (toward/away
+  // on the tray), negated so pushing the phone "up" sends the dice "away". Only
+  // update on a real shake so resting sensor noise doesn't nudge the dice.
   if (mag > STILL_SHAKE) {
     const n = mag || 1;
-    shakeDir.x = ax / n;
-    shakeDir.z = -ay / n;
+    shakeDir.x = dx / n;
+    shakeDir.z = -dy / n;
   }
   if (mag > START_SHAKE) {
     if (phase === 'stirring') stirSource = 'shake';
