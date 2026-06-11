@@ -117,9 +117,18 @@
       position: fixed; inset: 0; z-index: 25; overflow-y: auto;
       display: flex; -webkit-overflow-scrolling: touch;
       background: rgba(8,8,14,.5);
-      opacity: 0; pointer-events: none; transition: opacity .7s ease;
+      /* visibility: hidden on the off state is critical: the inner Cast Again /
+         Close buttons are .btn which sets pointer-events: auto, and that
+         re-enables click capture on the otherwise-invisible buttons — which
+         would intercept clicks aimed at things behind the panel (e.g. the
+         Enter button on the entry overlay). Same pattern as #about. */
+      opacity: 0; visibility: hidden; pointer-events: none;
+      transition: opacity .7s ease, visibility 0s linear .7s;
     }
-    #reading.show { opacity: 1; pointer-events: auto; }
+    #reading.show {
+      opacity: 1; visibility: visible; pointer-events: auto;
+      transition: opacity .7s ease, visibility 0s linear 0s;
+    }
     #reading .inner {
       margin: auto; padding: 56px 26px; max-width: 560px;
       display: flex; flex-direction: column; align-items: center;

@@ -87,6 +87,11 @@ const FACE_CENTERS = FACES.map(face => {
   return center.multiplyScalar(1 / face.length);
 });
 
+// Inradius = distance from die center to a face center. When a die lies flat on
+// a face, its center sits exactly this high above the floor. Used to place the
+// dice resting on the tray at startup instead of dropping them from midair.
+const INRADIUS = FACE_CENTERS[0].length();
+
 // A pentagon symmetry axis per face: face centre -> first corner. Glyphs are
 // aligned to this so they point at a corner instead of sitting at random rolls.
 const FACE_UP = FACES.map((face, fi) =>
@@ -252,17 +257,34 @@ camera.add(headlight);
 // ===========================================================================
 // Physics world
 // ===========================================================================
-const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -62, 0) });
+// Gravity at ~3× Earth — heavier than real life so the dice fall snappily and
+// feel like dense objects in a confined space, but not the leaden -62 that
+// made them rocket and overshoot. Combined with the higher damping and tighter
+// sleep threshold below, this is the right balance between "weighty" and
+// "lively".
+const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -28, 0) });
 world.broadphase = new CANNON.SAPBroadphase(world);
 world.allowSleep = true;
+// Solver iterations — the default 10 causes the jitter you see when dice
+// collide: under-resolved contact constraints overshoot, then correct, then
+// overshoot again. 22 lands them quietly.
+world.solver.iterations = 22;
+// Slightly relaxed contact equations — sharper than default reduces the
+// "bouncing in place" buzz before sleep.
+world.defaultContactMaterial.contactEquationStiffness = 1e7;
+world.defaultContactMaterial.contactEquationRelaxation = 4;
 
 const diceMat = new CANNON.Material('dice');
 const groundMat = new CANNON.Material('ground');
+// Lower restitution = less bouncy = settles faster, no buzz. Higher friction =
+// rolls less after a collision, sticks where it lands.
 world.addContactMaterial(new CANNON.ContactMaterial(diceMat, groundMat, {
-  friction: 0.55, restitution: 0.12,
+  friction: 0.75, restitution: 0.05,
+  contactEquationStiffness: 1e7, contactEquationRelaxation: 3,
 }));
 world.addContactMaterial(new CANNON.ContactMaterial(diceMat, diceMat, {
-  friction: 0.35, restitution: 0.18,
+  friction: 0.55, restitution: 0.08,
+  contactEquationStiffness: 1e7, contactEquationRelaxation: 3,
 }));
 
 // Floor + invisible walls keep the dice contained.
@@ -302,25 +324,89 @@ for (let i = 0; i < 3; i++) {
   const body = new CANNON.Body({ mass: 1, material: diceMat });
   body.addShape(dieShape);
   body.position.set(...START[i]);
-  body.linearDamping = 0.22;
-  body.angularDamping = 0.28;
-  body.sleepSpeedLimit = 0.15;
-  body.sleepTimeLimit = 0.4;
+  // Higher damping bleeds off the small residual velocities that cause the
+  // post-collision buzz; angular damping especially keeps a landed die from
+  // spinning in place. A bit more than before, but still lively while tumbling.
+  body.linearDamping = 0.10;
+  body.angularDamping = 0.14;
+  // Sleep threshold raised so dice actually fall asleep instead of trembling
+  // forever just above the old 0.15 limit. sleepTimeLimit shortened so they
+  // commit to sleep quickly once slow.
+  body.sleepSpeedLimit = 0.45;
+  body.sleepTimeLimit = 0.25;
   world.addBody(body);
 
-  dice.push({ mesh, body, symbols: config.symbols });
+  // Haptics — a solid tap when a die hits a wall, the floor, or another die,
+  // as if the real object struck the inside of the phone. Strength scales with
+  // impact speed. (Web only exposes navigator.vibrate, which Android honors;
+  // iOS Safari ignores it — there is no web haptic API on iOS.)
+  body.addEventListener('collide', onDiceCollide);
+
+  dice.push({ mesh, body, symbols: config.symbols, restPose: null });
+}
+
+// Shared down vector for resting orientation (declared before the init call
+// below so it isn't in the temporal dead zone when layDieFlat first runs).
+const _downVec = new THREE.Vector3(0, -1, 0);
+
+// Start with the dice lying at rest on the tray (not dropping from midair).
+dice.forEach((d, i) => layDieFlat(d, i));
+
+// --- Haptics ---------------------------------------------------------------
+// Whether the user has opted into motion (vibration follows the same gesture
+// permission on iOS-style flows; on Android it's just available). We only buzz
+// after the experience has started so the page doesn't vibrate on load.
+let hapticsArmed = false;
+const canVibrate = typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
+let lastHapticAt = 0;
+function onDiceCollide(e) {
+  if (!hapticsArmed || !canVibrate) return;
+  // Throttle so a burst of simultaneous contacts reads as one solid tap rather
+  // than a continuous buzz.
+  const now = performance.now();
+  if (now - lastHapticAt < 45) return;
+  let impact = 0;
+  try { impact = Math.abs(e.contact.getImpactVelocityAlongNormal()); } catch { impact = 0; }
+  if (impact < 1.2) return; // ignore feather-light touches and resting jostle
+  lastHapticAt = now;
+  // Map impact speed → a short, solid pulse. Clamp so even a hard slam stays a
+  // crisp tap (~32ms) rather than a long rumble.
+  const ms = Math.round(Math.min(32, 6 + impact * 2.2));
+  navigator.vibrate(ms);
 }
 
 function randomizeDie(d, i) {
   d.body.wakeUp();
+  // A modest toss height — enough to read as a fresh throw, but low enough that
+  // the (now lighter) dice don't slam the ceiling. They tumble down and the
+  // per-frame stir() impulses fling them around the tray.
   d.body.position.set(
     START[i][0] + (rng() - 0.5),
-    3 + rng() * 1.5,
+    1.6 + rng() * 0.8,
     START[i][2] + (rng() - 0.5)
   );
   d.body.velocity.setZero();
-  d.body.angularVelocity.set(rand(8), rand(8), rand(8));
+  d.body.angularVelocity.set(rand(9), rand(9), rand(9));
   d.body.quaternion.setFromEuler(rand(6), rand(6), rand(6));
+}
+
+// Lay a die flat on a random face, resting on the tray floor, dead still. Used
+// at startup so the dice simply lie there until the user shakes or taps Cast —
+// no more dropping-from-midair on page load.
+function layDieFlat(d, i) {
+  // Pick a random face to rest on; orient so that face's outward normal points
+  // straight down, then add a random spin about the vertical axis for variety.
+  const fi = Math.floor(rng() * FACE_NORMALS.length);
+  const q = new THREE.Quaternion().setFromUnitVectors(FACE_NORMALS[fi], _downVec);
+  const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), rng() * Math.PI * 2);
+  q.premultiply(yaw);
+  d.body.quaternion.set(q.x, q.y, q.z, q.w);
+  // Small spread across the tray so the three dice don't overlap. INRADIUS +
+  // a hair keeps the resting face just touching the floor without interpen.
+  d.body.position.set(START[i][0] * 0.7, INRADIUS + 0.02, START[i][2] * 0.7);
+  d.body.velocity.setZero();
+  d.body.angularVelocity.setZero();
+  d.body.sleep();
 }
 
 // Real randomness: draw from the Web Crypto entropy pool (OS-level hardware
@@ -365,18 +451,36 @@ function startStir(source) {
   setState(stirSource === 'shake' ? 'the dice are tumbling…' : 'the dice are stirring…');
 }
 
-// Toss the dice; `power` scales the energy so a harder shake tumbles them more.
-// Random in all three axes — no upward bias — so gravity is what drives them
-// downward. Spin is set fresh so they keep tumbling visibly while shaking.
-function stir(power) {
+// Toss the dice. `power` scales the energy so a harder shake tumbles them more.
+// When the shake came from real device motion, `shakeVec` carries the *world*
+// direction of the shake, so the dice fly the way the phone is moving — shake
+// left/right and they slam the left/right walls. A random component keeps the
+// tumble lively and stops all three from moving in lockstep.
+function stir(power, shakeVec) {
   power = power == null ? 1 : power;
+  // Directional push (0 when there's no live motion vector, e.g. button cast).
+  const dirX = shakeVec ? shakeVec.x : 0;
+  const dirZ = shakeVec ? shakeVec.z : 0;
+  const hasDir = (dirX * dirX + dirZ * dirZ) > 1e-4;
   dice.forEach(d => {
     d.body.wakeUp();
-    d.body.applyImpulse(
-      new CANNON.Vec3(rand(2.4 * power), rand(1.4 * power), rand(2.4 * power)),
-      new CANNON.Vec3(rand(0.25), rand(0.25), rand(0.25))
-    );
-    d.body.angularVelocity.set(rand(10 * power), rand(10 * power), rand(10 * power));
+    if (hasDir) {
+      // 75% directional, 25% scatter — flies the shake way but not robotically.
+      d.body.applyImpulse(
+        new CANNON.Vec3(
+          dirX * 3.4 * power + rand(1.4 * power),
+          rand(1.0 * power),
+          dirZ * 3.4 * power + rand(1.4 * power),
+        ),
+        new CANNON.Vec3(rand(0.25), rand(0.25), rand(0.25)),
+      );
+    } else {
+      d.body.applyImpulse(
+        new CANNON.Vec3(rand(2.6 * power), rand(1.2 * power), rand(2.6 * power)),
+        new CANNON.Vec3(rand(0.25), rand(0.25), rand(0.25)),
+      );
+    }
+    d.body.angularVelocity.set(rand(11 * power), rand(11 * power), rand(11 * power));
   });
 }
 
@@ -499,6 +603,9 @@ function setArenaOpacity(o) {
 let motionEnabled = false;
 let shakeEnergy = 0;     // peak-held shake intensity (m/s² above gravity)
 let stillSeconds = 0;    // how long the phone has been ~still while tumbling
+// World-space direction of the latest shake, normalized. The loop reads this so
+// the dice fly the way the phone is being shaken. Decays toward zero each frame.
+const shakeDir = { x: 0, z: 0 };
 const START_SHAKE = 6;   // begin tumbling at/above this intensity
 const STILL_SHAKE = 3;   // below this counts as "held still"
 const SETTLE_AFTER = 0.45; // seconds of stillness before the dice fall
@@ -508,10 +615,23 @@ function handleMotion(e) {
   const raw = !!(e.acceleration && e.acceleration.x !== null);
   const a = raw ? e.acceleration : e.accelerationIncludingGravity;
   if (!a) return;
-  let mag = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
+  const ax = a.x || 0, ay = a.y || 0, az = a.z || 0;
+  let mag = Math.hypot(ax, ay, az);
   if (!raw) mag = Math.abs(mag - 9.81); // strip the ~9.81 gravity baseline
   // Peak-hold: spikes register instantly; the loop decays this over time.
   if (mag > shakeEnergy) shakeEnergy = mag;
+  // Map the phone's acceleration frame onto the tray's world frame. The phone
+  // is held roughly upright facing the user; device-x (left/right across the
+  // screen) drives world-x (left/right across the tray), and device-y (up/down
+  // along the screen) drives world-z (toward/away on the tray). Negate device-y
+  // so pushing the phone "up" sends the dice "away" from the camera, which is
+  // what the eye expects. Only update direction on real shakes so a resting
+  // phone's sensor noise doesn't nudge the dice.
+  if (mag > STILL_SHAKE) {
+    const n = mag || 1;
+    shakeDir.x = ax / n;
+    shakeDir.z = -ay / n;
+  }
   if (mag > START_SHAKE) {
     if (phase === 'stirring') stirSource = 'shake';
     else if (phase === 'idle' || phase === 'settling' || phase === 'presented') startStir('shake');
@@ -525,6 +645,9 @@ function setHint(text) {
 
 async function enableMotion() {
   const note = document.getElementById('motionNote');
+  // This runs from the Enter tap — a user gesture — so it's a valid moment to
+  // arm vibration (browsers gate navigator.vibrate behind a prior interaction).
+  hapticsArmed = true;
   const enabled = () => {
     window.addEventListener('devicemotion', handleMotion);
     motionEnabled = true;
@@ -551,7 +674,7 @@ async function enableMotion() {
 }
 
 // Manual cast (desktop / tap): tumble for a beat, then let them settle.
-function manualCast() { startStir('button'); }
+function manualCast() { hapticsArmed = true; startStir('button'); }
 
 // ===========================================================================
 // Loop
@@ -565,10 +688,14 @@ function animate() {
     stirTimer += dt;
     if (stirSource === 'shake') {
       // Tumble harder the harder you shake; decay the peak each frame so the
-      // dice settle once you hold the phone still.
-      const power = Math.min(1.4, Math.max(0.3, shakeEnergy / 16));
-      stir(power);
+      // dice settle once you hold the phone still. Pass the live shake direction
+      // so the dice fly the way the phone is moving.
+      const power = Math.min(1.6, Math.max(0.35, shakeEnergy / 14));
+      stir(power, shakeDir);
       shakeEnergy *= Math.pow(0.86, dt * 60);
+      // Decay the direction too so a held-still phone stops pushing the dice.
+      shakeDir.x *= Math.pow(0.80, dt * 60);
+      shakeDir.z *= Math.pow(0.80, dt * 60);
       if (shakeEnergy < STILL_SHAKE) {
         stillSeconds += dt;
         if (stillSeconds > SETTLE_AFTER) settle();
