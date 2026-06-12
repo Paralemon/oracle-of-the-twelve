@@ -12,6 +12,13 @@
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <link rel="icon" type="image/png" href="icon-192.png" />
   <title>Oracle of the Twelve</title>
+  <!-- Social unfurls — shared cast links (?cast=p-s-h) preview nicely. -->
+  <meta name="description" content="Cast three twelve-sided dice — planet, sign, and house — and receive your reading." />
+  <meta property="og:title" content="Oracle of the Twelve" />
+  <meta property="og:description" content="Cast three twelve-sided dice — planet, sign, and house — and receive your reading." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://oracle-of-the-twelve.vercel.app/icon-512.png" />
+  <meta name="twitter:card" content="summary" />
   <style>
     :root { --gold: #d9b15a; --ink: #0b0b14; }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -158,9 +165,16 @@
     }
     #reading .draw {
       text-align: center; color: var(--gold); letter-spacing: 10px;
-      font-size: 46px; margin-bottom: 28px; text-indent: 10px;
+      font-size: 46px; margin-bottom: 10px; text-indent: 10px;
       text-shadow: 0 2px 18px rgba(217,177,90,.4);
       font-family: "Apple Symbols", "Segoe UI Symbol", "STIXGeneral", serif;
+    }
+    /* Plain-words caption under the glyphs — grounds the cast for anyone who
+       doesn't read astrological symbols. */
+    #reading .draw-label {
+      text-align: center; color: rgba(247,217,137,.7);
+      font-size: 13px; letter-spacing: 2.5px; text-transform: uppercase;
+      margin: 0 0 26px;
     }
     #reading .body { line-height: 1.8; font-size: 17px; opacity: .92;
       white-space: pre-wrap; text-align: left; }
@@ -399,7 +413,7 @@
 
   <div id="topbar" class="hud">
     <div id="title">Oracle of the Twelve</div>
-    <div id="state">awaiting the cast</div>
+    <div id="state" aria-live="polite">awaiting the cast</div>
     <!-- Small "About" link in the top-right corner — always available, never
          intrusive. Opens the #about modal. -->
     <button id="aboutToggle" class="hud-link" aria-label="About the Oracle">About</button>
@@ -416,7 +430,10 @@
   <div id="reading">
     <div class="inner">
       <div class="draw" id="readingDraw"></div>
-      <div class="body" id="readingBody"></div>
+      <!-- Plain-words caption so the cast is legible to people who don't read
+           astrological glyphs: "Venus in Scorpio · 5th House". -->
+      <div class="draw-label" id="readingLabel"></div>
+      <div class="body" id="readingBody" aria-live="polite"></div>
       <!-- Per-question turn appended here once the user starts asking. Each
            turn is a stylized "you asked..." + "the oracle answers..." pair
            rendered with the same gold word-reveal as the static reading. -->
@@ -437,6 +454,7 @@
       </div>
       <div class="actions">
         <button id="readingRecast" class="btn primary">Cast Again</button>
+        <button id="readingShare" class="btn">Share</button>
         <button id="readingClose" class="btn">Close</button>
       </div>
     </div>

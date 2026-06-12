@@ -471,24 +471,36 @@ function stir(power, shakeVec) {
   const hasDir = (dirX * dirX + dirZ * dirZ) > 1e-4;
   dice.forEach(d => {
     d.body.wakeUp();
+    // Recirculation: a gentle inward pull that grows quadratically toward the
+    // wall (zero-ish at center, ~40% of the directional push at the rim). If
+    // any directional bias survives the high-pass filter, this makes the dice
+    // orbit back through the arena instead of pinning against one spot — the
+    // backstop against clustering no matter what the sensors do.
+    const px = d.body.position.x, pz = d.body.position.z;
+    const pr = Math.hypot(px, pz);
+    let cx = 0, cz = 0;
+    if (pr > 0.2) {
+      const cf = 1.1 * power * Math.pow(Math.min(pr / ARENA_R, 1), 2);
+      cx = -(px / pr) * cf;
+      cz = -(pz / pr) * cf;
+    }
     if (hasDir) {
       // Direction now dominates so the dice genuinely fly the way you shake —
-      // possible because gravity no longer biases the direction (see the
-      // high-pass filter in handleMotion) and the direction decays fast, so a
+      // possible because the high-pass filter removes any constant bias, so a
       // back-and-forth shake reverses the push each half-stroke instead of
       // piling everything against one wall. The bouncing circular wall and the
       // remaining scatter keep it lively.
       d.body.applyImpulse(
         new CANNON.Vec3(
-          dirX * 2.8 * power + rand(1.5 * power),
+          dirX * 2.8 * power + rand(1.5 * power) + cx,
           rand(1.1 * power),
-          dirZ * 2.8 * power + rand(1.5 * power),
+          dirZ * 2.8 * power + rand(1.5 * power) + cz,
         ),
         new CANNON.Vec3(rand(0.25), rand(0.25), rand(0.25)),
       );
     } else {
       d.body.applyImpulse(
-        new CANNON.Vec3(rand(2.6 * power), rand(1.2 * power), rand(2.6 * power)),
+        new CANNON.Vec3(rand(2.6 * power) + cx, rand(1.2 * power), rand(2.6 * power) + cz),
         new CANNON.Vec3(rand(0.25), rand(0.25), rand(0.25)),
       );
     }
@@ -658,24 +670,28 @@ const SETTLE_AFTER = 0.45; // seconds of stillness before the dice fall
 function handleMotion(e) {
   const af = e.acceleration;               // gravity-free (may be null/zero)
   const ag = e.accelerationIncludingGravity;
-  let dx, dy, dz;
+  let rx, ry, rz;
   if (af && af.x != null && (Math.abs(af.x) + Math.abs(af.y) + Math.abs(af.z)) > 0.05) {
-    // Device supplies a real gravity-free reading — already the dynamic signal.
-    dx = af.x; dy = af.y; dz = af.z;
+    rx = af.x; ry = af.y; rz = af.z;
   } else if (ag) {
-    // Only with-gravity available (common on Android). High-pass it: track the
-    // slow gravity vector with a low-pass filter, then subtract to get the fast
-    // shake component. This is what removes the constant directional bias.
-    const ax = ag.x || 0, ay = ag.y || 0, az = ag.z || 0;
-    if (!gravInit) { gravEst.x = ax; gravEst.y = ay; gravEst.z = az; gravInit = true; }
-    const A = 0.9; // closer to 1 = slower gravity tracking, more shake passes
-    gravEst.x = A * gravEst.x + (1 - A) * ax;
-    gravEst.y = A * gravEst.y + (1 - A) * ay;
-    gravEst.z = A * gravEst.z + (1 - A) * az;
-    dx = ax - gravEst.x; dy = ay - gravEst.y; dz = az - gravEst.z;
+    rx = ag.x || 0; ry = ag.y || 0; rz = ag.z || 0;
   } else {
     return;
   }
+  // Universal high-pass — applied to BOTH paths, not just the with-gravity
+  // fallback. Even gravity-free acceleration (the iOS path) carries a quasi-
+  // constant bias during a real shake: pivoting the phone at the wrist makes
+  // the centripetal acceleration point steadily toward the wrist for the whole
+  // shake, regardless of stroke direction. That constant vector — plus sensor
+  // bias, plus any gravity residue — is what dragged every cast into the same
+  // quadrant. A low-pass estimate of the signal tracks anything quasi-constant;
+  // subtracting it leaves only the alternating stroke motion.
+  if (!gravInit) { gravEst.x = rx; gravEst.y = ry; gravEst.z = rz; gravInit = true; }
+  const A = 0.95; // ~0.3s time constant at 60Hz: kills DC, preserves 2–4Hz strokes
+  gravEst.x = A * gravEst.x + (1 - A) * rx;
+  gravEst.y = A * gravEst.y + (1 - A) * ry;
+  gravEst.z = A * gravEst.z + (1 - A) * rz;
+  const dx = rx - gravEst.x, dy = ry - gravEst.y, dz = rz - gravEst.z;
 
   const mag = Math.hypot(dx, dy, dz);
   // Peak-hold: spikes register instantly; the loop decays this over time.
@@ -801,7 +817,13 @@ function animate() {
     if (t >= 1) { phase = 'presented'; onPresented(); }
   }
 
-  renderer.render(scene, camera);
+  // Skip GPU work while the reading panel fully covers a static presented
+  // scene — the canvas is blurred and nothing moves, so re-rendering it 60×/s
+  // only burns battery. Rendering resumes automatically the moment the panel
+  // closes or a new cast starts.
+  if (!(phase === 'presented' && document.body.classList.contains('reading-open'))) {
+    renderer.render(scene, camera);
+  }
 }
 
 function resize() {
@@ -817,9 +839,29 @@ animate();
 // ===========================================================================
 // UI wiring
 // ===========================================================================
+// Shared-cast deep link: ?cast=planet-sign-house reproduces a specific
+// placement (the URL the Share button produces). The recipient enters and sees
+// the same three faces presented, then can read it or cast their own.
+const CAST_PARAM = (() => {
+  const m = /^(\d{1,2})-(\d{1,2})-(\d{1,2})$/.exec(
+    new URLSearchParams(location.search).get('cast') || '');
+  if (!m) return null;
+  const p = +m[1], s = +m[2], h = +m[3];
+  return (p >= 0 && p < 12 && s >= 0 && s < 12 && h >= 1 && h <= 12)
+    ? { p, s, h } : null;
+})();
+
+function presentSharedCast(c) {
+  dice[0].resultFace = c.p;
+  dice[1].resultFace = c.s;
+  dice[2].resultFace = c.h - 1; // NUMBER_GLYPHS index for house h
+  beginPresent(); // floats the dice up showing those faces; onPresented() sets lastDraw
+}
+
 document.getElementById('enterBtn').addEventListener('click', async () => {
   await enableMotion();
   document.getElementById('overlay').classList.add('hidden');
+  if (CAST_PARAM && phase === 'idle') presentSharedCast(CAST_PARAM);
 });
 document.getElementById('rollBtn').addEventListener('click', manualCast);
 window.addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') manualCast(); });
@@ -868,10 +910,33 @@ function loadReadings() {
   return readingsPromise;
 }
 
+// Warm the bundle in the background shortly after load (idle time, after the
+// dice scene is up) so even the FIRST "Interpret the Cast" tap is instant. The
+// service worker keeps it in a persistent cache, so this is a one-time cost.
+window.addEventListener('load', () => {
+  const warm = () => { loadReadings().catch(() => {}); };
+  if ('requestIdleCallback' in window) requestIdleCallback(warm, { timeout: 4000 });
+  else setTimeout(warm, 2500);
+});
+
+// Human-readable placement names — used for the caption under the glyphs in
+// the reading panel and for the share text, so people who don't read astrological
+// glyphs still know exactly what they cast.
+const PLANET_NAMES = ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars', 'Jupiter',
+  'Saturn', 'Uranus', 'Neptune', 'Pluto', 'Rahu', 'Ketu'];
+const SIGN_NAMES = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
+  'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'];
+const ORDINALS = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th',
+  '9th', '10th', '11th', '12th'];
+function placementLabel(d) {
+  return `${PLANET_NAMES[d.planet]} in ${SIGN_NAMES[d.sign]} · ${ORDINALS[d.house - 1]} House`;
+}
+
 let lastDraw = null;
 const interpretBtn = document.getElementById('interpretBtn');
 const readingEl = document.getElementById('reading');
 const readingDraw = document.getElementById('readingDraw');
+const readingLabel = document.getElementById('readingLabel');
 const readingBody = document.getElementById('readingBody');
 const readingDialog = document.getElementById('readingDialog');
 const askToggle = document.getElementById('askToggle');
@@ -891,6 +956,7 @@ function cancelAllReveals() {
 
 function openReadingPanel() {
   readingDraw.textContent = lastDraw ? lastDraw.glyphs : '';
+  readingLabel.textContent = lastDraw ? placementLabel(lastDraw) : '';
   readingEl.classList.add('show');
   document.body.classList.add('reading-open');
 }
@@ -957,6 +1023,11 @@ const REVEAL_PARAGRAPH_PAUSE = 600; // extra pause between paragraphs
 // Returns a handle with .cancel() that skips to the fully-revealed state.
 function revealInto(target, text, opts) {
   opts = opts || {};
+  // Respect the OS-level reduced-motion preference: show the full text at once
+  // instead of the ~12s word-by-word animation.
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    opts = Object.assign({}, opts, { instant: true });
+  }
   target.classList.remove('dim', 'fading');
   target.classList.add('revealing');
   target.textContent = '';
@@ -1257,6 +1328,27 @@ askSubmit.addEventListener('click', async () => {
 // Cast Again — recast directly from the reading panel. startStir() hides the
 // reading and sets phase to stirring, so a single tap dismisses + recasts.
 document.getElementById('readingRecast').addEventListener('click', manualCast);
+
+// Share — native share sheet on mobile, clipboard on desktop. The URL carries
+// ?cast=p-s-h so the recipient lands on the same placement, presented.
+document.getElementById('readingShare').addEventListener('click', async () => {
+  if (!lastDraw) return;
+  const url = location.origin + location.pathname
+    + `?cast=${lastDraw.planet}-${lastDraw.sign}-${lastDraw.house}`;
+  const text = `${lastDraw.glyphs}\n${placementLabel(lastDraw)}\n\n`
+    + (currentReading ? currentReading + '\n\n' : '');
+  const btn = document.getElementById('readingShare');
+  try {
+    if (navigator.share) {
+      await navigator.share({ title: 'Oracle of the Twelve', text, url });
+    } else {
+      await navigator.clipboard.writeText(text + url);
+      const old = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = old; }, 1400);
+    }
+  } catch { /* user dismissed the share sheet — not an error */ }
+});
 
 // Universal tap-confirmation flash: any .btn gets a brief `.pressed` class on
 // click so the user always sees their tap landed, even when the underlying
