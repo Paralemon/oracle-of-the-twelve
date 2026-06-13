@@ -457,6 +457,7 @@ function startStir(source) {
   if (phase === 'stirring') { if (source) stirSource = source; return; }
   phase = 'stirring';
   stirSource = source || 'button';
+  shakeArmed = false; // require the phone to go quiet before a shake recasts
   stirTimer = 0;
   stillSeconds = 0;
   resultEl.classList.remove('show');
@@ -678,9 +679,20 @@ const shakeDir = { x: 0, z: 0 };
 // the dice always leaned the same way (the "upper-left" drift).
 const gravEst = { x: 0, y: 0, z: 0 };
 let gravInit = false;
-const START_SHAKE = 6;   // begin tumbling at/above this dynamic intensity
+const START_SHAKE = 9;   // begin tumbling at/above this dynamic intensity (deliberate shake)
 const STILL_SHAKE = 3;   // below this counts as "held still"
 const SETTLE_AFTER = 0.45; // seconds of stillness before the dice fall
+// Re-arm gate: a shake can only START a *new* cast once the phone has gone
+// quiet since the last one. Without this, a sustained jiggle (or even reading
+// the result with a slightly unsteady hand) re-triggers cast after cast — the
+// recast loop. Set false when a cast begins; set true again when motion drops
+// below STILL_SHAKE.
+let shakeArmed = true;
+// True while a modal/panel covers the scene — motion must never recast then.
+function anyPanelOpen() {
+  return document.body.classList.contains('reading-open')
+      || document.body.classList.contains('about-open');
+}
 
 function handleMotion(e) {
   const af = e.acceleration;               // gravity-free (may be null/zero)
@@ -720,10 +732,17 @@ function handleMotion(e) {
     const n = mag || 1;
     shakeDir.x = dx / n;
     shakeDir.z = -dy / n;
+  } else {
+    // Phone has gone quiet — a new shake-cast is allowed again.
+    shakeArmed = true;
   }
   if (mag > START_SHAKE) {
-    if (phase === 'stirring') stirSource = 'shake';
-    else if (phase === 'idle' || phase === 'settling' || phase === 'presented') startStir('shake');
+    if (phase === 'stirring') {
+      stirSource = 'shake'; // already casting: just keep feeding it
+    } else if (shakeArmed && !anyPanelOpen()
+        && (phase === 'idle' || phase === 'settling' || phase === 'presented')) {
+      startStir('shake');
+    }
   }
 }
 
@@ -1229,6 +1248,7 @@ soundToggle.addEventListener('click', () => {
   let dragOn = false, lx = 0, ly = 0, lt = 0;
   const appEl = document.getElementById('app');
   appEl.addEventListener('pointerdown', e => {
+    if (anyPanelOpen()) return; // never stir from under an open reading/panel
     dragOn = true; lx = e.clientX; ly = e.clientY; lt = performance.now();
   });
   window.addEventListener('pointerup', () => { dragOn = false; });
@@ -1388,16 +1408,44 @@ document.getElementById('readingShare').addEventListener('click', async () => {
   const text = `${lastDraw.glyphs}\n${placementLabel(lastDraw)}\n\n`
     + (currentReading ? currentReading + '\n\n' : '');
   const btn = document.getElementById('readingShare');
-  try {
-    if (navigator.share) {
-      await navigator.share({ title: 'Oracle of the Twelve', text, url });
-    } else {
-      await navigator.clipboard.writeText(text + url);
-      const old = btn.textContent;
-      btn.textContent = 'Copied';
-      setTimeout(() => { btn.textContent = old; }, 1400);
+  const flash = (msg) => {
+    btn.textContent = msg;
+    setTimeout(() => { btn.textContent = 'Share'; }, 1600);
+  };
+
+  // 1) Native share sheet, but only when it can actually share this payload.
+  const payload = { title: 'Oracle of the Twelve', text, url };
+  if (navigator.share && (!navigator.canShare || navigator.canShare(payload))) {
+    try { await navigator.share(payload); return; }
+    catch (e) {
+      // User dismissed the sheet — done, no fallback needed.
+      if (e && e.name === 'AbortError') return;
+      // Anything else (NotAllowedError on desktop, etc.): fall through to copy.
     }
-  } catch { /* user dismissed the share sheet — not an error */ }
+  }
+
+  // 2) Clipboard (the desktop path — this is what "nothing happened" before,
+  // because the old code silently swallowed every failure with no feedback).
+  try {
+    await navigator.clipboard.writeText(text + url);
+    flash('Link copied');
+    return;
+  } catch { /* clipboard API blocked or unavailable — try the legacy path */ }
+
+  // 3) Legacy execCommand copy via a hidden textarea (older/Safari fallbacks).
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text + url;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    flash(ok ? 'Link copied' : 'Copy failed');
+  } catch {
+    flash('Copy failed');
+  }
 });
 
 // Universal tap-confirmation flash: any .btn gets a brief `.pressed` class on
