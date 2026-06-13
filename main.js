@@ -1,5 +1,10 @@
 import * as THREE from 'three';
 import * as CANNON from 'cannon-es';
+import { PLANET_GLYPHS, ZODIAC_GLYPHS, NUMBER_GLYPHS, placementLabel, castGlyphs }
+  from './placements.js';
+import { loadReadings } from './readings.js';
+import { armAudio, playClack, playChime, isMuted, setMuted } from './audio.js';
+import { revealInto, cancelAllReveals, trackReveal } from './reveal.js';
 
 // ---------------------------------------------------------------------------
 // Regular dodecahedron (d12) data — one source of truth shared by the visual
@@ -35,9 +40,8 @@ const RAW_FACES = [
 ];
 
 // Each die carries its own set of 12 face symbols (Unicode astrology glyphs).
-const PLANET_GLYPHS = ['☉','☽','☿','♀','♂','♃','♄','♅','♆','♇','☊','☋'];
-const ZODIAC_GLYPHS = ['♈','♉','♊','♋','♌','♍','♎','♏','♐','♑','♒','♓'];
-const NUMBER_GLYPHS = ['1','2','3','4','5','6','7','8','9','10','11','12'];
+// Die face symbol sets now live in placements.js (imported above), shared with
+// the reading caption, journal, and share text.
 
 const DIE_CONFIGS = [
   // 1: white body, black planet/node glyphs
@@ -350,62 +354,8 @@ const REST_RADIUS = 1.35; // distance of each resting die from tray center
 // Start with the dice lying at rest on the tray (not dropping from midair).
 dice.forEach((d, i) => layDieFlat(d, i));
 
-// --- Sound -------------------------------------------------------------------
-// Procedural WebAudio — no audio files. A dice impact is a short burst of
-// band-passed noise (a "clack") whose pitch and loudness scale with impact
-// speed; the oracle's pronouncement is a soft two-note chime. The context is
-// created/resumed on a user gesture (browser requirement), and a persisted
-// mute toggle lives in the topbar. This is the iOS substitute for haptics too.
-let audioCtx = null;
-let muted = localStorage.getItem('oracleMuted') === '1';
-function armAudio() {
-  if (muted) return;
-  if (!audioCtx) {
-    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
-    catch { return; }
-  }
-  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
-}
-let lastClackAt = 0;
-function playClack(impact) {
-  if (muted || !audioCtx || audioCtx.state !== 'running') return;
-  const now = performance.now();
-  if (now - lastClackAt < 40) return; // a flurry reads as one clack
-  lastClackAt = now;
-  const dur = 0.06;
-  const buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * dur), audioCtx.sampleRate);
-  const data = buf.getChannelData(0);
-  for (let i = 0; i < data.length; i++) {
-    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 2.2);
-  }
-  const src = audioCtx.createBufferSource();
-  src.buffer = buf;
-  const bp = audioCtx.createBiquadFilter();
-  bp.type = 'bandpass';
-  // Harder hits ring slightly higher and louder, like real resin dice.
-  bp.frequency.value = 1400 + Math.min(impact, 8) * 220 + (Math.random() - 0.5) * 400;
-  bp.Q.value = 1.1;
-  const g = audioCtx.createGain();
-  g.gain.value = Math.min(0.5, 0.06 + impact * 0.045);
-  src.connect(bp); bp.connect(g); g.connect(audioCtx.destination);
-  src.start();
-}
-function playChime() {
-  if (muted || !audioCtx || audioCtx.state !== 'running') return;
-  const t = audioCtx.currentTime;
-  // G4 then D5 — a soft open fifth, decaying like a small bell.
-  [[392, 0, 1.0], [587.33, 0.12, 0.75]].forEach(([f, dt, amp]) => {
-    const o = audioCtx.createOscillator();
-    o.type = 'sine';
-    o.frequency.value = f;
-    const g = audioCtx.createGain();
-    g.gain.setValueAtTime(0, t + dt);
-    g.gain.linearRampToValueAtTime(amp * 0.07, t + dt + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 1.6);
-    o.connect(g); g.connect(audioCtx.destination);
-    o.start(t + dt); o.stop(t + dt + 1.8);
-  });
-}
+// Sound lives in audio.js (imported above) — clacks on impact, a low swell
+// when the oracle speaks, persisted mute.
 
 // --- Haptics ---------------------------------------------------------------
 // Whether the user has opted into motion (vibration follows the same gesture
@@ -697,7 +647,10 @@ function onPresented() {
     house: Number(dice[2].symbols[dice[2].resultFace]),
     glyphs: dice.map(d => d.symbols[d.resultFace]).join('  '),
   };
-  logCast(lastDraw.planet, lastDraw.sign, lastDraw.house); // journal entry
+  // First cast of the day is the day's placement; later casts are ordinary.
+  const isDaily = !dailyDone();
+  if (isDaily) markDaily(lastDraw.planet, lastDraw.sign, lastDraw.house);
+  logCast(lastDraw.planet, lastDraw.sign, lastDraw.house, isDaily);
   interpretBtn.classList.remove('hidden');
 }
 
@@ -921,10 +874,24 @@ function presentSharedCast(c) {
   beginPresent(); // floats the dice up showing those faces; onPresented() sets lastDraw
 }
 
+// Idle framing reflects the daily ritual: before the day's cast, the state
+// line invites it; after, it's neutral. A shared-cast link overrides both.
+function refreshIdleFraming() {
+  if (CAST_PARAM) return;
+  if (dailyDone()) {
+    setState('awaiting the cast');
+    setHint('Shake your phone to stir the dice — hold it still to let them fall.');
+  } else {
+    setState('the day’s cast awaits');
+    setHint('Your first cast today is the day’s placement. Hold a question, and cast.');
+  }
+}
+
 document.getElementById('enterBtn').addEventListener('click', async () => {
   await enableMotion();
   document.getElementById('overlay').classList.add('hidden');
   if (CAST_PARAM && phase === 'idle') presentSharedCast(CAST_PARAM);
+  else refreshIdleFraming();
 });
 document.getElementById('rollBtn').addEventListener('click', manualCast);
 window.addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') manualCast(); });
@@ -958,42 +925,16 @@ const ORACLE_API = window.ORACLE_API
 // from ORACLE_API so an `?oracle=` override flips both endpoints together.
 const ASK_API = ORACLE_API ? ORACLE_API.replace(/\/interpret(\/?)$/, '/ask$1') : null;
 
-// Lazy-loaded reading bundle. Keyed by `${planet}-${sign}-${house}` where
-// planet and sign are 0–11 face indices matching die order (Sun…Ketu,
-// Aries…Pisces) and house is 1–12.
-let readingsBundle = null;
-let readingsPromise = null;
-function loadReadings() {
-  if (readingsBundle) return Promise.resolve(readingsBundle);
-  if (readingsPromise) return readingsPromise;
-  readingsPromise = fetch('./readings.json')
-    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-    .then(j => { readingsBundle = j; return j; })
-    .catch(err => { readingsPromise = null; throw err; });
-  return readingsPromise;
-}
-
-// Warm the bundle in the background shortly after load (idle time, after the
-// dice scene is up) so even the FIRST "Interpret the Cast" tap is instant. The
-// service worker keeps it in a persistent cache, so this is a one-time cost.
+// The reading bundle loader lives in readings.js; placement names/labels in
+// placements.js (both imported above). Warm the bundle in the background
+// shortly after load (idle time, after the dice scene is up) so even the FIRST
+// "Interpret the Cast" tap is instant. The service worker keeps it in a
+// persistent cache, so this is a one-time cost.
 window.addEventListener('load', () => {
   const warm = () => { loadReadings().catch(() => {}); };
   if ('requestIdleCallback' in window) requestIdleCallback(warm, { timeout: 4000 });
   else setTimeout(warm, 2500);
 });
-
-// Human-readable placement names — used for the caption under the glyphs in
-// the reading panel and for the share text, so people who don't read astrological
-// glyphs still know exactly what they cast.
-const PLANET_NAMES = ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars', 'Jupiter',
-  'Saturn', 'Uranus', 'Neptune', 'Pluto', 'Rahu', 'Ketu'];
-const SIGN_NAMES = ['Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
-  'Libra', 'Scorpio', 'Sagittarius', 'Capricorn', 'Aquarius', 'Pisces'];
-const ORDINALS = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th',
-  '9th', '10th', '11th', '12th'];
-function placementLabel(d) {
-  return `${PLANET_NAMES[d.planet]} in ${SIGN_NAMES[d.sign]} · ${ORDINALS[d.house - 1]} House`;
-}
 
 let lastDraw = null;
 const interpretBtn = document.getElementById('interpretBtn');
@@ -1008,14 +949,8 @@ const askInput = document.getElementById('askInput');
 const askSubmit = document.getElementById('askSubmit');
 const askCancel = document.getElementById('askCancel');
 
-// Active reveals — there can be more than one in flight at once (the main
-// reading + any in-progress oracle answer), so we track them as a Set and
-// cancel them en masse when the panel closes or the user starts a new cast.
-const activeReveals = new Set();
-function cancelAllReveals() {
-  activeReveals.forEach(r => r.cancel && r.cancel());
-  activeReveals.clear();
-}
+// Reveal machinery (word-by-word gold fade, cancellation set) lives in
+// reveal.js, imported above.
 
 function openReadingPanel() {
   readingDraw.textContent = lastDraw ? lastDraw.glyphs : '';
@@ -1060,107 +995,13 @@ function revealReading(text) {
     FADE_OUT_MS,
   );
   // Track this preliminary timer so canceling mid-fade also works.
-  const handle = {
+  trackReveal({
     cancel: () => {
       clearTimeout(fadeTimer);
       // Skip to the full reveal immediately.
       revealInto(readingBody, text, { instant: true, onComplete: showAskToggle });
     },
-  };
-  activeReveals.add(handle);
-}
-
-// Pacing of the word reveal. Step is per-character (not per-word) so longer
-// words consume more time before the next starts — visually that means the
-// reveal cadence stays even instead of feeling jumpy across word lengths.
-// Combined with the long .9s word fade in CSS, many words are always in-flight
-// at once, giving a continuous wave of opacity rather than discrete pops.
-// Tuned so a ~210-word / ~1300-char reading takes roughly 12s overall.
-const REVEAL_STEP_PER_CHAR  = 7;   // ms added per character of the word
-const REVEAL_MIN_STEP       = 18;  // floor for very short words ("a", "is")
-const REVEAL_SENTENCE_PAUSE = 220; // extra pause after `.` / `!` / `?`
-const REVEAL_PARAGRAPH_PAUSE = 600; // extra pause between paragraphs
-
-// Generic word-reveal — targets any element, so it works for the main reading
-// body AND for individual oracle-answer turns appended in the dialog area.
-// Returns a handle with .cancel() that skips to the fully-revealed state.
-function revealInto(target, text, opts) {
-  opts = opts || {};
-  // Respect the OS-level reduced-motion preference: show the full text at once
-  // instead of the ~12s word-by-word animation.
-  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    opts = Object.assign({}, opts, { instant: true });
-  }
-  target.classList.remove('dim', 'fading');
-  target.classList.add('revealing');
-  target.textContent = '';
-
-  // Split on blank lines so paragraph breaks survive in the rendered output
-  // (the target uses `white-space: pre-wrap`, so the `\n\n` we re-insert below
-  // renders as a real blank line).
-  const paragraphs = text.split(/\n\n+/);
-  const words = [];
-  paragraphs.forEach((para, pi) => {
-    if (pi > 0) target.appendChild(document.createTextNode('\n\n'));
-    // Keep whitespace runs as their own tokens so spacing inside the paragraph
-    // is preserved exactly when we re-assemble the DOM.
-    const tokens = para.split(/(\s+)/);
-    let lastWordSpan = null;
-    tokens.forEach(tok => {
-      if (!tok) return;
-      if (/^\s+$/.test(tok)) {
-        target.appendChild(document.createTextNode(tok));
-      } else {
-        const s = document.createElement('span');
-        s.className = 'word';
-        s.textContent = tok;
-        target.appendChild(s);
-        words.push({ el: s, text: tok, endsParagraph: false });
-        lastWordSpan = words[words.length - 1];
-      }
-    });
-    if (lastWordSpan && pi < paragraphs.length - 1) lastWordSpan.endsParagraph = true;
   });
-
-  if (opts.instant) {
-    words.forEach(w => w.el.classList.add('shown'));
-    target.classList.remove('revealing');
-    if (opts.onComplete) opts.onComplete();
-    return { cancel: () => {} };
-  }
-
-  // Schedule each word's fade-in at an accumulating delay.
-  const timers = [];
-  let delay = 0;
-  words.forEach((w) => {
-    timers.push(setTimeout(() => w.el.classList.add('shown'), delay));
-    delay += Math.max(REVEAL_MIN_STEP, w.text.length * REVEAL_STEP_PER_CHAR);
-    if (/[.!?]$/.test(w.text)) delay += REVEAL_SENTENCE_PAUSE;
-    if (w.endsParagraph) delay += REVEAL_PARAGRAPH_PAUSE;
-  });
-  // One more timer to drop the `revealing` class (and pointer cursor) and
-  // fire onComplete once the last word has had time to finish its fade-in.
-  const handle = {
-    cancel: () => {
-      timers.forEach(clearTimeout);
-      words.forEach(w => w.el.classList.add('shown'));
-      target.classList.remove('revealing');
-      activeReveals.delete(handle);
-      if (opts.onComplete) opts.onComplete();
-    },
-  };
-  timers.push(setTimeout(() => {
-    target.classList.remove('revealing');
-    activeReveals.delete(handle);
-    if (opts.onComplete) opts.onComplete();
-  }, delay + 600));
-
-  // Tap on the target during reveal skips to the full text.
-  const tapToSkip = () => handle.cancel();
-  target.addEventListener('click', tapToSkip, { once: true });
-
-  activeReveals.add(handle);
-  return handle;
 }
 
 function hideReading() {
@@ -1282,15 +1123,31 @@ function loadJournalEntries() {
   catch { return []; }
 }
 
-function logCast(p, s, h) {
+function logCast(p, s, h, isDaily) {
   const j = loadJournalEntries();
-  j.push({ t: Date.now(), p, s, h });
+  const entry = { t: Date.now(), p, s, h };
+  if (isDaily) entry.d = 1;
+  j.push(entry);
   while (j.length > JOURNAL_MAX) j.shift();
   try { localStorage.setItem(JOURNAL_KEY, JSON.stringify(j)); } catch { /* storage full/blocked */ }
 }
 
-function castGlyphs(p, s, h) {
-  return `${PLANET_GLYPHS[p]}  ${ZODIAC_GLYPHS[s]}  ${NUMBER_GLYPHS[h - 1]}`;
+// --- Daily cast ritual -------------------------------------------------------
+// The first cast of each calendar day is the day's placement — marked in the
+// journal and reflected in the idle state line. One special cast a day gives
+// the oracle a rhythm: cast once, carry it, return tomorrow.
+const DAILY_KEY = 'oracleDaily';
+function isoDay() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function dailyDone() {
+  try { return (JSON.parse(localStorage.getItem(DAILY_KEY)) || {}).date === isoDay(); }
+  catch { return false; }
+}
+function markDaily(p, s, h) {
+  try { localStorage.setItem(DAILY_KEY, JSON.stringify({ date: isoDay(), p, s, h })); }
+  catch { /* blocked */ }
 }
 
 function renderJournal() {
@@ -1317,8 +1174,9 @@ function renderJournal() {
     label.textContent = placementLabel({ planet: en.p, sign: en.s, house: en.h });
     const date = document.createElement('div');
     date.className = 'je-date';
-    date.textContent = new Date(en.t).toLocaleString(undefined,
+    const when = new Date(en.t).toLocaleString(undefined,
       { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    date.textContent = en.d ? `✶ the day’s cast · ${when}` : when;
     meta.appendChild(label);
     meta.appendChild(date);
     row.appendChild(glyphs);
@@ -1354,12 +1212,10 @@ journalEl.addEventListener('click', e => { if (e.target === journalEl) closeJour
 // Sound toggle — persisted; label reflects state.
 // =============================================================================
 const soundToggle = document.getElementById('soundToggle');
-function syncSoundLabel() { soundToggle.textContent = muted ? 'Muted' : 'Sound'; }
+function syncSoundLabel() { soundToggle.textContent = isMuted() ? 'Muted' : 'Sound'; }
 syncSoundLabel();
 soundToggle.addEventListener('click', () => {
-  muted = !muted;
-  try { localStorage.setItem('oracleMuted', muted ? '1' : '0'); } catch { }
-  if (!muted) armAudio();
+  setMuted(!isMuted());
   syncSoundLabel();
 });
 

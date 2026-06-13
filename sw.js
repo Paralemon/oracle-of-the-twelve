@@ -1,6 +1,6 @@
 // Service worker — makes the Oracle installable and loadable offline.
 // Bump CACHE when shipping changes so clients pick up new assets.
-const CACHE = 'oracle-v17';
+const CACHE = 'oracle-v18';
 // The 2.4MB readings bundle lives in its own cache that SURVIVES shell bumps —
 // otherwise every deploy forced every client to re-download all 1,728 readings.
 // Bump this only when the readings themselves change.
@@ -12,6 +12,10 @@ const SHELL = [
   './',
   './index.html',
   './main.js',
+  './placements.js',
+  './readings.js',
+  './audio.js',
+  './reveal.js',
   './manifest.webmanifest',
   './icon-192.png',
   './icon-512.png',
