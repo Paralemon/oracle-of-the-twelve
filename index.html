@@ -17,8 +17,10 @@
   <meta property="og:title" content="Oracle of the Twelve" />
   <meta property="og:description" content="Cast three twelve-sided dice — planet, sign, and house — and receive your reading." />
   <meta property="og:type" content="website" />
-  <meta property="og:image" content="https://oracle-of-the-twelve.vercel.app/icon-512.png" />
-  <meta name="twitter:card" content="summary" />
+  <meta property="og:image" content="https://oracle-of-the-twelve.vercel.app/og-image.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
   <style>
     :root { --gold: #d9b15a; --ink: #0b0b14; }
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -311,12 +313,15 @@
     #topbar #aboutToggle {
       position: absolute; top: 14px; right: 14px;
     }
+    /* Journal + sound stack quietly in the opposite corner. */
+    #topbar #journalToggle { position: absolute; top: 14px; left: 14px; }
+    #topbar #soundToggle { position: absolute; top: 40px; left: 14px; }
     /* Overlay trigger sits just below the Enter button with a little air. */
     #overlay #aboutFromOverlay { margin-top: 8px; }
 
     /* About panel — shares the reading panel's visual language: full-screen
        dim scrim, scrollable inner column, parchment text, gold heading rules. */
-    #about {
+    #about, #journal {
       position: fixed; inset: 0; z-index: 30; overflow-y: auto;
       display: flex; -webkit-overflow-scrolling: touch;
       background: rgba(8,8,14,.65);
@@ -333,7 +338,7 @@
         radial-gradient(120% 80% at 50% 0%, rgba(26,21,16,.55), transparent 60%),
         rgba(9,8,13,.95);
     }
-    #about.show {
+    #about.show, #journal.show {
       opacity: 1; visibility: visible; pointer-events: auto;
       /* On open, flip visibility instantly so the fade-in is visible — the
          transition-delay on visibility only matters for the close direction. */
@@ -341,7 +346,7 @@
     }
     body.about-open #app canvas { filter: blur(14px) brightness(.4); transform: scale(1.06); }
     body.about-open .hud { opacity: 0; transition: opacity .4s ease; }
-    #about .inner {
+    #about .inner, #journal .inner {
       margin: 0 auto; width: 100%; max-width: 560px;
       padding: calc(64px + env(safe-area-inset-top, 0px)) 24px
                calc(48px + env(safe-area-inset-bottom, 0px));
@@ -359,7 +364,7 @@
     }
     .about-x:hover, .about-x:focus { color: var(--gold);
       text-shadow: 0 0 10px rgba(247,217,137,.4); outline: none; }
-    #about .about-title {
+    #about .about-title, #journal .about-title {
       text-align: center; color: var(--gold);
       letter-spacing: 3px; font-weight: normal; font-size: 23px;
       line-height: 1.3; margin: 0 0 34px;
@@ -380,17 +385,42 @@
     #about p:last-child { margin-bottom: 0; }
     #about em { font-style: italic; color: rgba(247,217,137,.85); }
     #about strong { font-weight: normal; color: var(--gold); }
-    #about .actions {
+    #about .actions, #journal .actions {
       display: flex; justify-content: center;
       margin: 16px auto 0;
     }
     /* On small screens, tighten the top padding and type so the panel opens to
        the title (not a wall of empty space) and the content breathes. */
     @media (max-width: 480px) {
-      #about .inner { padding-top: calc(56px + env(safe-area-inset-top, 0px)); }
-      #about .about-title { font-size: 21px; letter-spacing: 2px; margin-bottom: 28px; }
+      #about .inner, #journal .inner { padding-top: calc(56px + env(safe-area-inset-top, 0px)); }
+      #about .about-title, #journal .about-title { font-size: 21px; letter-spacing: 2px; margin-bottom: 28px; }
       #about p { font-size: 15.5px; }
       #about section { margin-bottom: 26px; }
+    }
+
+    /* Journal entries — one row per past cast: glyphs, plain-words placement,
+       date. Rows are tappable and reopen that placement's reading. */
+    .journal-entry {
+      display: flex; align-items: center; gap: 16px;
+      padding: 14px 6px; cursor: pointer;
+      border-bottom: 1px solid rgba(217,177,90,.18);
+      transition: background .15s;
+    }
+    .journal-entry:hover { background: rgba(247,217,137,.05); }
+    .journal-entry .je-glyphs {
+      font-size: 22px; color: var(--gold); letter-spacing: 4px; text-indent: 4px;
+      font-family: "Apple Symbols", "Segoe UI Symbol", "STIXGeneral", serif;
+      white-space: nowrap;
+    }
+    .journal-entry .je-meta { flex: 1; min-width: 0; }
+    .journal-entry .je-label {
+      font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase;
+      color: #e9e3d2; opacity: .9;
+    }
+    .journal-entry .je-date { font-size: 12px; opacity: .45; margin-top: 3px; }
+    .journal-empty {
+      text-align: center; opacity: .5; font-style: italic;
+      padding: 34px 0; line-height: 1.6;
     }
 
     /* Hopping dots — used as a "the oracle is thinking" indicator.
@@ -417,6 +447,9 @@
     <!-- Small "About" link in the top-right corner — always available, never
          intrusive. Opens the #about modal. -->
     <button id="aboutToggle" class="hud-link" aria-label="About the Oracle">About</button>
+    <!-- Quiet links in the top-left: past casts + sound toggle. -->
+    <button id="journalToggle" class="hud-link" aria-label="Past casts">Journal</button>
+    <button id="soundToggle" class="hud-link" aria-label="Toggle sound">Sound</button>
   </div>
 
   <div id="result"></div>
@@ -493,6 +526,19 @@
       </section>
       <div class="actions">
         <button id="aboutClose" class="btn primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Journal — past casts, saved locally on this device. Tapping an entry
+       reopens that placement's reading. Shares the About panel's styling. -->
+  <div id="journal">
+    <button id="journalCloseX" class="about-x" aria-label="Close">&times;</button>
+    <div class="inner">
+      <h2 class="about-title">Past Casts</h2>
+      <div id="journalList"></div>
+      <div class="actions">
+        <button id="journalClose" class="btn primary">Close</button>
       </div>
     </div>
   </div>

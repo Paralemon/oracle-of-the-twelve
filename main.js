@@ -350,6 +350,63 @@ const REST_RADIUS = 1.35; // distance of each resting die from tray center
 // Start with the dice lying at rest on the tray (not dropping from midair).
 dice.forEach((d, i) => layDieFlat(d, i));
 
+// --- Sound -------------------------------------------------------------------
+// Procedural WebAudio — no audio files. A dice impact is a short burst of
+// band-passed noise (a "clack") whose pitch and loudness scale with impact
+// speed; the oracle's pronouncement is a soft two-note chime. The context is
+// created/resumed on a user gesture (browser requirement), and a persisted
+// mute toggle lives in the topbar. This is the iOS substitute for haptics too.
+let audioCtx = null;
+let muted = localStorage.getItem('oracleMuted') === '1';
+function armAudio() {
+  if (muted) return;
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch { return; }
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+}
+let lastClackAt = 0;
+function playClack(impact) {
+  if (muted || !audioCtx || audioCtx.state !== 'running') return;
+  const now = performance.now();
+  if (now - lastClackAt < 40) return; // a flurry reads as one clack
+  lastClackAt = now;
+  const dur = 0.06;
+  const buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * dur), audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / data.length, 2.2);
+  }
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  const bp = audioCtx.createBiquadFilter();
+  bp.type = 'bandpass';
+  // Harder hits ring slightly higher and louder, like real resin dice.
+  bp.frequency.value = 1400 + Math.min(impact, 8) * 220 + (Math.random() - 0.5) * 400;
+  bp.Q.value = 1.1;
+  const g = audioCtx.createGain();
+  g.gain.value = Math.min(0.5, 0.06 + impact * 0.045);
+  src.connect(bp); bp.connect(g); g.connect(audioCtx.destination);
+  src.start();
+}
+function playChime() {
+  if (muted || !audioCtx || audioCtx.state !== 'running') return;
+  const t = audioCtx.currentTime;
+  // G4 then D5 — a soft open fifth, decaying like a small bell.
+  [[392, 0, 1.0], [587.33, 0.12, 0.75]].forEach(([f, dt, amp]) => {
+    const o = audioCtx.createOscillator();
+    o.type = 'sine';
+    o.frequency.value = f;
+    const g = audioCtx.createGain();
+    g.gain.setValueAtTime(0, t + dt);
+    g.gain.linearRampToValueAtTime(amp * 0.07, t + dt + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 1.6);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(t + dt); o.stop(t + dt + 1.8);
+  });
+}
+
 // --- Haptics ---------------------------------------------------------------
 // Whether the user has opted into motion (vibration follows the same gesture
 // permission on iOS-style flows; on Android it's just available). We only buzz
@@ -358,14 +415,17 @@ let hapticsArmed = false;
 const canVibrate = typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
 let lastHapticAt = 0;
 function onDiceCollide(e) {
-  if (!hapticsArmed || !canVibrate) return;
+  if (!hapticsArmed) return;
+  let impact = 0;
+  try { impact = Math.abs(e.contact.getImpactVelocityAlongNormal()); } catch { impact = 0; }
+  if (impact < 1.2) return; // ignore feather-light touches and resting jostle
+  // Sound fires for every qualifying hit (it has its own throttle).
+  playClack(impact);
+  if (!canVibrate) return;
   // Throttle so a burst of simultaneous contacts reads as one solid tap rather
   // than a continuous buzz.
   const now = performance.now();
   if (now - lastHapticAt < 45) return;
-  let impact = 0;
-  try { impact = Math.abs(e.contact.getImpactVelocityAlongNormal()); } catch { impact = 0; }
-  if (impact < 1.2) return; // ignore feather-light touches and resting jostle
   lastHapticAt = now;
   // Map impact speed → a short, solid pulse. Clamp so even a hard slam stays a
   // crisp tap (~32ms) rather than a long rumble.
@@ -626,6 +686,7 @@ function beginPresent() {
   phase = 'presenting';
   setState('the oracle has spoken');
   document.body.classList.add('spoken'); // brightens the state-line halo
+  playChime(); // a soft open fifth as the dice rise
 }
 
 function onPresented() {
@@ -636,6 +697,7 @@ function onPresented() {
     house: Number(dice[2].symbols[dice[2].resultFace]),
     glyphs: dice.map(d => d.symbols[d.resultFace]).join('  '),
   };
+  logCast(lastDraw.planet, lastDraw.sign, lastDraw.house); // journal entry
   interpretBtn.classList.remove('hidden');
 }
 
@@ -720,8 +782,9 @@ function setHint(text) {
 async function enableMotion() {
   const note = document.getElementById('motionNote');
   // This runs from the Enter tap — a user gesture — so it's a valid moment to
-  // arm vibration (browsers gate navigator.vibrate behind a prior interaction).
+  // arm vibration and audio (browsers gate both behind a prior interaction).
   hapticsArmed = true;
+  armAudio();
   const enabled = () => {
     window.addEventListener('devicemotion', handleMotion);
     motionEnabled = true;
@@ -748,7 +811,7 @@ async function enableMotion() {
 }
 
 // Manual cast (desktop / tap): tumble for a beat, then let them settle.
-function manualCast() { hapticsArmed = true; startStir('button'); }
+function manualCast() { hapticsArmed = true; armAudio(); startStir('button'); }
 
 // ===========================================================================
 // Loop
@@ -1114,7 +1177,11 @@ function hideReading() {
 // between the question and the answer.
 const CEREMONY_PAUSE_MS = 800;
 
-interpretBtn.addEventListener('click', async () => {
+interpretBtn.addEventListener('click', interpretCurrentDraw);
+
+// Look up and reveal the reading for lastDraw. Shared by the Interpret button
+// and journal entries (which set lastDraw to a past cast, then call this).
+async function interpretCurrentDraw() {
   if (!lastDraw) return;
   const key = `${lastDraw.planet}-${lastDraw.sign}-${lastDraw.house}`;
   interpretBtn.disabled = true;
@@ -1169,7 +1236,7 @@ interpretBtn.addEventListener('click', async () => {
     showReadingStatus(errorMsg, /* withDots = */ false);
   }
   interpretBtn.disabled = false;
-});
+}
 
 document.getElementById('readingClose').addEventListener('click', hideReading);
 
@@ -1199,7 +1266,134 @@ aboutEl.addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && aboutEl.classList.contains('show')) closeAbout();
+  if (e.key === 'Escape' && journalEl.classList.contains('show')) closeJournal();
 });
+
+// =============================================================================
+// Journal — past casts, saved locally. Tapping an entry reopens that reading.
+// =============================================================================
+const journalEl = document.getElementById('journal');
+const journalList = document.getElementById('journalList');
+const JOURNAL_KEY = 'oracleJournal';
+const JOURNAL_MAX = 100;
+
+function loadJournalEntries() {
+  try { return JSON.parse(localStorage.getItem(JOURNAL_KEY)) || []; }
+  catch { return []; }
+}
+
+function logCast(p, s, h) {
+  const j = loadJournalEntries();
+  j.push({ t: Date.now(), p, s, h });
+  while (j.length > JOURNAL_MAX) j.shift();
+  try { localStorage.setItem(JOURNAL_KEY, JSON.stringify(j)); } catch { /* storage full/blocked */ }
+}
+
+function castGlyphs(p, s, h) {
+  return `${PLANET_GLYPHS[p]}  ${ZODIAC_GLYPHS[s]}  ${NUMBER_GLYPHS[h - 1]}`;
+}
+
+function renderJournal() {
+  const entries = loadJournalEntries();
+  journalList.textContent = '';
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.className = 'journal-empty';
+    empty.textContent = 'No casts yet — the dice await your first question.';
+    journalList.appendChild(empty);
+    return;
+  }
+  // Newest first.
+  entries.slice().reverse().forEach(en => {
+    const row = document.createElement('div');
+    row.className = 'journal-entry';
+    const glyphs = document.createElement('div');
+    glyphs.className = 'je-glyphs';
+    glyphs.textContent = castGlyphs(en.p, en.s, en.h);
+    const meta = document.createElement('div');
+    meta.className = 'je-meta';
+    const label = document.createElement('div');
+    label.className = 'je-label';
+    label.textContent = placementLabel({ planet: en.p, sign: en.s, house: en.h });
+    const date = document.createElement('div');
+    date.className = 'je-date';
+    date.textContent = new Date(en.t).toLocaleString(undefined,
+      { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    meta.appendChild(label);
+    meta.appendChild(date);
+    row.appendChild(glyphs);
+    row.appendChild(meta);
+    row.addEventListener('click', () => {
+      closeJournal();
+      lastDraw = {
+        planet: en.p, sign: en.s, house: en.h,
+        glyphs: castGlyphs(en.p, en.s, en.h),
+      };
+      interpretCurrentDraw();
+    });
+    journalList.appendChild(row);
+  });
+}
+
+function openJournal() {
+  renderJournal();
+  journalEl.classList.add('show');
+  document.body.classList.add('about-open'); // same canvas blur as About
+  journalEl.scrollTop = 0;
+}
+function closeJournal() {
+  journalEl.classList.remove('show');
+  document.body.classList.remove('about-open');
+}
+document.getElementById('journalToggle').addEventListener('click', openJournal);
+document.getElementById('journalClose').addEventListener('click', closeJournal);
+document.getElementById('journalCloseX').addEventListener('click', closeJournal);
+journalEl.addEventListener('click', e => { if (e.target === journalEl) closeJournal(); });
+
+// =============================================================================
+// Sound toggle — persisted; label reflects state.
+// =============================================================================
+const soundToggle = document.getElementById('soundToggle');
+function syncSoundLabel() { soundToggle.textContent = muted ? 'Muted' : 'Sound'; }
+syncSoundLabel();
+soundToggle.addEventListener('click', () => {
+  muted = !muted;
+  try { localStorage.setItem('oracleMuted', muted ? '1' : '0'); } catch { }
+  if (!muted) armAudio();
+  syncSoundLabel();
+});
+
+// =============================================================================
+// Drag-to-stir — swirling the pointer (mouse or finger) across the dice stirs
+// them, feeding the same shake machinery as device motion: drag velocity sets
+// the energy and direction, so a fast flick flings the dice the way you moved.
+// Buttons and panels sit above the canvas, so this only fires on the scene.
+// =============================================================================
+{
+  let dragOn = false, lx = 0, ly = 0, lt = 0;
+  const appEl = document.getElementById('app');
+  appEl.addEventListener('pointerdown', e => {
+    dragOn = true; lx = e.clientX; ly = e.clientY; lt = performance.now();
+  });
+  window.addEventListener('pointerup', () => { dragOn = false; });
+  window.addEventListener('pointercancel', () => { dragOn = false; });
+  window.addEventListener('pointermove', e => {
+    if (!dragOn) return;
+    const now = performance.now();
+    const dt = Math.max(8, now - lt);
+    const vx = (e.clientX - lx) / dt, vy = (e.clientY - ly) / dt; // px/ms
+    lx = e.clientX; ly = e.clientY; lt = now;
+    const speed = Math.hypot(vx, vy);
+    if (speed < 0.25) return; // ignore slow drifts
+    hapticsArmed = true; armAudio();
+    const mag = Math.min(30, speed * 12); // map into the shake-energy scale
+    if (mag > shakeEnergy) shakeEnergy = mag;
+    shakeDir.x = vx / speed;  // screen x → world x
+    shakeDir.z = vy / speed;  // screen y (down) → world z (toward camera)
+    if (phase === 'idle' || phase === 'settling' || phase === 'presented') startStir('shake');
+    else if (phase === 'stirring') stirSource = 'shake';
+  });
+}
 
 // =============================================================================
 // Ask the Oracle — follow-up question against the same cast/reading

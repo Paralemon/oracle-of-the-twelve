@@ -14,7 +14,35 @@ while still being safe for slow generations.
 from http.server import BaseHTTPRequestHandler
 import json
 import os
+import time
 import urllib.request
+
+# --- Rate limiting -----------------------------------------------------------
+# In-memory, per-instance. Vercel reuses warm instances for minutes-to-hours,
+# so this meaningfully throttles a single abusive IP and caps the instance's
+# total burn, without external storage. (A determined attacker hitting many
+# cold instances can exceed these; for real scale, move to Vercel KV.)
+RATE_WINDOW_S = 600      # sliding window
+RATE_MAX_PER_IP = 6      # questions per IP per window
+GLOBAL_DAY_MAX = 400     # circuit breaker: total calls per instance per day
+_per_ip = {}
+_all_calls = []
+
+
+def _allow(ip):
+    now = time.time()
+    recent = [t for t in _per_ip.get(ip, []) if now - t < RATE_WINDOW_S]
+    if len(recent) >= RATE_MAX_PER_IP:
+        _per_ip[ip] = recent
+        return False
+    while _all_calls and now - _all_calls[0] > 86400:
+        _all_calls.pop(0)
+    if len(_all_calls) >= GLOBAL_DAY_MAX:
+        return False
+    recent.append(now)
+    _per_ip[ip] = recent
+    _all_calls.append(now)
+    return True
 
 # Claude Opus 4.7 — adaptive thinking only (budget_tokens removed on 4.7).
 # No temperature/top_p/top_k (also removed on 4.7). Effort: "high" is the
@@ -186,6 +214,11 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not os.environ.get("ANTHROPIC_API_KEY"):
             self._json(503, {"error": "The oracle is silent — the server has no API key configured."})
+            return
+        ip = (self.headers.get("x-forwarded-for", "").split(",")[0].strip()
+              or self.client_address[0])
+        if not _allow(ip):
+            self._json(429, {"error": "The oracle must rest between questions. Return in a little while."})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
