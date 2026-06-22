@@ -458,6 +458,11 @@ function startStir(source) {
   phase = 'stirring';
   stirSource = source || 'button';
   shakeArmed = false; // require the phone to go quiet before a shake recasts
+  // Reset the locked-state gate so the next cast must earn a fresh shake.
+  lastCastAt = performance.now();
+  presentReady = false;
+  stillSinceLock = 0;
+  motionBuf.length = 0; // discard the motion that caused entry (kills the loop)
   stirTimer = 0;
   stillSeconds = 0;
   resultEl.classList.remove('show');
@@ -641,6 +646,13 @@ function beginPresent() {
 }
 
 function onPresented() {
+  // Lock-in: start the refractory and force the next motion-recast to earn a
+  // fresh still-dwell. (The phone is held still to settle the dice, which would
+  // otherwise leave the gate armed for the very next handling move.)
+  lockEnteredAt = performance.now();
+  presentReady = false;
+  stillSinceLock = 0;
+  motionBuf.length = 0;
   // The three drawn faces: planet (die 0), sign (die 1), house number (die 2).
   lastDraw = {
     planet: dice[0].resultFace,
@@ -694,6 +706,33 @@ function anyPanelOpen() {
       || document.body.classList.contains('about-open');
 }
 
+// --- Shake-gesture gate (prevents accidental recast once the dice are locked) -
+// From the IDLE state, a simple magnitude trigger casts (no risk there — nothing
+// to disturb). But once a cast is LOCKED IN (presented), incidental phone motion
+// must NEVER recast: bringing it to your face, turning to show someone, walking,
+// setting it down. The hard part is that a turn-at-arm's-length produces huge
+// SUSTAINED centripetal acceleration that beats any accel-only test — so the
+// decisive separator is the gyroscope: a hand-shake's rotation rate sits in a
+// band (~25–290°/s) that a turn (≫290) and a flat-surface buzz (≪25) both miss.
+// A recast from the locked state requires ALL of: sustained loud energy + enough
+// dominant-axis reversals + rotation in the hand-shake band, behind a refractory,
+// a required "the phone went still since lock-in" latch, and a global cooldown.
+const motionBuf = [];                 // rolling window of {t, dx, dy, dz, mag, rot}
+let lockEnteredAt = 0;                 // when we entered 'presented'
+let stillSinceLock = 0;               // start of the current continuous-still stretch
+let presentReady = false;             // a real still gap has occurred since lock-in
+let lastCastAt = 0;                   // last cast start (any source) — loop breaker
+const WINDOW_MS = 400;                // sliding analysis window
+const RECAST_MAG = 7.0;               // m/s² — a sample is "loud" above this (tops walking)
+const LOUD_FRACTION = 0.50;           // ≥50% of window samples loud → sustained, not a spike
+const REV_MIN = 3;                    // required dominant-axis reversals in-window
+const REV_AMP = 3.5;                  // m/s² — a reversal must clear this swing (discounts jitter)
+const ROT_LO = 25;                    // deg/s — peak rotation must exceed this (kills flat-surface buzz)
+const ROT_HI = 290;                   // deg/s — and stay below this (kills turn-to-show / fast pivots)
+const PRESENT_REFRACTORY_MS = 900;    // dead time after lock-in: no recast considered
+const STILL_DWELL_MS = 300;           // phone must go continuously still this long, once, after lock-in
+const RECAST_COOLDOWN_MS = 1200;      // global minimum between any two cast starts
+
 function handleMotion(e) {
   const af = e.acceleration;               // gravity-free (may be null/zero)
   const ag = e.accelerationIncludingGravity;
@@ -721,28 +760,90 @@ function handleMotion(e) {
   const dx = rx - gravEst.x, dy = ry - gravEst.y, dz = rz - gravEst.z;
 
   const mag = Math.hypot(dx, dy, dz);
-  // Peak-hold: spikes register instantly; the loop decays this over time.
-  if (mag > shakeEnergy) shakeEnergy = mag;
-  // Map the phone's (gravity-free) acceleration frame onto the tray's world
-  // frame. Device-x (left/right across the screen) drives world-x (left/right
-  // across the tray); device-y (up/down the screen) drives world-z (toward/away
-  // on the tray), negated so pushing the phone "up" sends the dice "away". Only
-  // update on a real shake so resting sensor noise doesn't nudge the dice.
+  if (mag > shakeEnergy) shakeEnergy = mag; // peak-hold; loop decays it
+
+  const now = performance.now();
+  // Rotation rate (deg/s) from the same event — the decisive signal. -1 = the
+  // device doesn't report it (then locked-state recast falls back to button).
+  const rr = e.rotationRate;
+  const rot = rr ? Math.hypot(rr.alpha || 0, rr.beta || 0, rr.gamma || 0) : -1;
+
+  // shakeDir + still bookkeeping. Map device frame → tray world frame (device-x
+  // → world-x; device-y → world-z, negated). A still stretch latches the
+  // "ready for another cast" flag once it's long enough.
   if (mag > STILL_SHAKE) {
     const n = mag || 1;
     shakeDir.x = dx / n;
     shakeDir.z = -dy / n;
+    stillSinceLock = 0;                       // motion breaks the quiet stretch
   } else {
-    // Phone has gone quiet — a new shake-cast is allowed again.
-    shakeArmed = true;
+    shakeArmed = true;                        // legacy quiet re-arm (idle path)
+    if (stillSinceLock === 0) stillSinceLock = now;
+    if (now - stillSinceLock >= STILL_DWELL_MS) presentReady = true;
   }
-  if (mag > START_SHAKE) {
-    if (phase === 'stirring') {
-      stirSource = 'shake'; // already casting: just keep feeding it
-    } else if (shakeArmed && !anyPanelOpen()
-        && (phase === 'idle' || phase === 'settling' || phase === 'presented')) {
+
+  // Rolling window for the locked-state oscillation analysis.
+  motionBuf.push({ t: now, dx, dy, dz, mag, rot });
+  while (motionBuf.length && now - motionBuf[0].t > WINDOW_MS) motionBuf.shift();
+
+  if (anyPanelOpen()) return;                 // panels hard-block motion
+
+  // IDLE: the cheap magnitude trigger (nothing locked to disturb), + loop guard.
+  if (phase === 'idle') {
+    if (mag > START_SHAKE && shakeArmed && now - lastCastAt >= RECAST_COOLDOWN_MS) {
       startStir('shake');
     }
+    return;
+  }
+
+  // MID-CAST: keep feeding an in-progress tumble; never (re)trigger.
+  if (phase === 'stirring') {
+    if (mag > START_SHAKE) stirSource = 'shake';
+    return;
+  }
+
+  // LOCKED (presented): magnitude-only trigger is DISABLED. A recast requires
+  // passing every layer of the conjunctive gate. Settling/presenting/pause fall
+  // through with no trigger at all.
+  if (phase === 'presented') {
+    if (now - lockEnteredAt < PRESENT_REFRACTORY_MS) return;   // (1) refractory
+    if (now - lastCastAt < RECAST_COOLDOWN_MS) return;         // (2) loop breaker
+    if (!presentReady) return;                                  // (3) must have gone still since lock-in
+    if (motionBuf.length < 5) return;
+
+    // (4a) Sustained loud — most of the window above RECAST_MAG, not one spike.
+    let loud = 0;
+    for (let i = 0; i < motionBuf.length; i++) if (motionBuf[i].mag >= RECAST_MAG) loud++;
+    if (loud < LOUD_FRACTION * motionBuf.length) return;
+
+    // (4b) Dominant-axis reversals — kills single-arc transports (bring-to-face).
+    let sx = 0, sy = 0, sz = 0;
+    for (let i = 0; i < motionBuf.length; i++) {
+      sx += Math.abs(motionBuf[i].dx); sy += Math.abs(motionBuf[i].dy); sz += Math.abs(motionBuf[i].dz);
+    }
+    const dom = (sx >= sy && sx >= sz) ? 'dx' : (sy >= sz ? 'dy' : 'dz');
+    let reversals = 0, lastSign = 0;
+    for (let i = 0; i < motionBuf.length; i++) {
+      const v = motionBuf[i][dom];
+      if (Math.abs(v) < REV_AMP) continue;
+      const s = v > 0 ? 1 : -1;
+      if (lastSign !== 0 && s !== lastSign) reversals++;
+      lastSign = s;
+    }
+    if (reversals < REV_MIN) return;
+
+    // (4c) Rotation band — the decisive layer. Turn-to-show rotates far above
+    // ROT_HI; a flat-surface buzz rotates far below ROT_LO; a hand-shake is in
+    // between. No gyro at all → don't motion-recast (button-only fallback).
+    let peakRot = -1, haveRot = false;
+    for (let i = 0; i < motionBuf.length; i++) {
+      if (motionBuf[i].rot >= 0) { haveRot = true; if (motionBuf[i].rot > peakRot) peakRot = motionBuf[i].rot; }
+    }
+    if (!haveRot) return;
+    if (peakRot <= ROT_LO || peakRot >= ROT_HI) return;
+
+    // All layers passed — a deliberate, hand-held, oscillating shake.
+    startStir('shake');
   }
 }
 
@@ -760,7 +861,7 @@ async function enableMotion() {
   const enabled = () => {
     window.addEventListener('devicemotion', handleMotion);
     motionEnabled = true;
-    setHint('Shake your phone to tumble the dice — hold it still to let them fall.');
+    setHint('Shake to tumble the dice — hold still to let them fall. Reading them? Move the phone freely; only a firm shake (or the button) casts again.');
   };
   if (typeof DeviceMotionEvent !== 'undefined' &&
       typeof DeviceMotionEvent.requestPermission === 'function') {
@@ -899,7 +1000,7 @@ function refreshIdleFraming() {
   if (CAST_PARAM) return;
   if (dailyDone()) {
     setState('awaiting the cast');
-    setHint('Shake your phone to stir the dice — hold it still to let them fall.');
+    setHint('Shake to stir the dice — hold still to let them fall. Reading them? Move the phone freely; only a firm shake (or the button) casts again.');
   } else {
     setState('the day’s cast awaits');
     setHint('Your first cast today is the day’s placement. Hold a question, and cast.');
@@ -1249,6 +1350,7 @@ soundToggle.addEventListener('click', () => {
   const appEl = document.getElementById('app');
   appEl.addEventListener('pointerdown', e => {
     if (anyPanelOpen()) return; // never stir from under an open reading/panel
+    if (performance.now() - lastCastAt < RECAST_COOLDOWN_MS) return; // loop guard
     dragOn = true; lx = e.clientX; ly = e.clientY; lt = performance.now();
   });
   window.addEventListener('pointerup', () => { dragOn = false; });
