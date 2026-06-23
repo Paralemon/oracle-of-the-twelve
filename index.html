@@ -221,20 +221,26 @@
     #reading .actions .btn { margin: 0; }
 
     /* Ask-the-Oracle area sits between the static reading and the Cast/Close
-       actions. The toggle button mirrors the reading's tone; tapping it opens
-       a textarea + Ask/Cancel buttons. */
-    #reading .ask { margin-top: 28px; display: flex; flex-direction: column;
-      align-items: center; gap: 14px; }
-    #reading .ask-toggle { font-size: 13px; letter-spacing: 1.5px; padding: 11px 22px; }
-    #reading .ask-form { width: 100%; max-width: 520px;
-      display: flex; flex-direction: column; gap: 12px; align-items: center; }
+       actions. align-self: stretch makes it span the FULL reading width (the
+       flex parent centers its children, so without this the area would only be
+       as wide as the toggle button — which left the textarea cramped). */
+    #reading .ask { margin-top: 30px; align-self: stretch; width: 100%;
+      display: flex; flex-direction: column; align-items: center; gap: 16px; }
+    #reading .ask-toggle { font-size: 14px; letter-spacing: 1.5px; padding: 12px 24px; }
+    /* The form stretches to the reading's full text width; the textarea fills
+       it, with the same body font size so it reads as part of the reading. */
+    #reading .ask-form { width: 100%;
+      display: flex; flex-direction: column; gap: 14px; align-items: stretch; }
     #reading .ask-form textarea {
-      width: 100%; resize: vertical; min-height: 84px;
+      width: 100%; resize: vertical; min-height: 110px;
       background: rgba(247,217,137,.05);
       border: 2px solid var(--gold);
       border-radius: 16px;
-      color: #e9e3d2; padding: 14px 16px;
-      font: 16px/1.5 inherit; letter-spacing: .3px;
+      color: #e9e3d2; padding: 16px 18px;
+      /* Separate properties — NOT the `font` shorthand: `font: 17px/1.7 inherit`
+         is invalid (inherit can't be the family there) and the browser silently
+         dropped it, leaving the textarea at its tiny ~13px UA default. */
+      font-family: inherit; font-size: 17px; line-height: 1.7; letter-spacing: .2px;
       backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
       box-shadow: 0 0 14px rgba(247,217,137,.15), inset 0 0 12px rgba(247,217,137,.04);
     }
